@@ -22,7 +22,7 @@ from textual.binding import Binding
 from textual.events import Key
 
 # Ensure these are available in your PYTHONPATH
-from cloudmesh.ai.monitor.terminalgui.core import HostManager, RemoteExecutor
+from cloudmesh.ai.monitor.terminalgui.core import HostManager, RemoteExecutor, mac_smi
 
 
 class DetailScreen(ModalScreen):
@@ -108,7 +108,7 @@ class DashboardScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Vertical(
-            Static("🚀 Cloudmesh-ai Fleet Dashboard", id="title"),
+            Static("🚀 Cloudmesh AI Monitor Dashboard", id="title"),
             DataTable(id="metrics_table"),
             id="dashboard_container",
         )
@@ -210,7 +210,7 @@ class DashboardScreen(Screen):
                     break
 
     def refresh_host_metrics(self, label: str) -> None:
-        """SSH worker to fetch GPU data without blocking the UI."""
+        """Worker to fetch GPU data without blocking the UI."""
         hm = HostManager()
         info = hm.get_host_info(label)
         if not info:
@@ -223,14 +223,19 @@ class DashboardScreen(Screen):
         # Use custom probe command if available, otherwise use default
         probe_cmd = info.get("probe_cmd", "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits")
         
-        executor = RemoteExecutor()
-        full_cmd = self._get_full_probe_cmd(probe_cmd)
-        success, gpu_data = executor.run_command(
-            hostname,
-            full_cmd,
-        )
-        
-        gpu_data = self._clean_probe_output(gpu_data)
+        if probe_cmd.startswith("mac-smi"):
+            parts = probe_cmd.split()
+            target_host = parts[1] if len(parts) > 1 else hostname
+            gpu_data = mac_smi(target_host)
+            success = not gpu_data.startswith("Error")
+        else:
+            executor = RemoteExecutor()
+            full_cmd = self._get_full_probe_cmd(probe_cmd)
+            success, gpu_data = executor.run_command(
+                hostname,
+                full_cmd,
+            )
+            gpu_data = self._clean_probe_output(gpu_data)
         
         if success and gpu_data:
             lines = gpu_data.splitlines()
@@ -471,18 +476,34 @@ class AddHostScreen(Screen):
 
         self.app.notify(f"Probing {hostname}...", severity="information")
         
-        full_cmd = self.app.screen._get_full_probe_cmd(probe_cmd) if isinstance(self.app.screen, DashboardScreen) else (probe_cmd if probe_cmd.startswith("nvidia-smi") else f"nvidia-smi {probe_cmd}")
-        
-        # Immediate debug print to stderr and file to verify the action started
-        debug_start = f"\n[DEBUG] Starting Probe | Host: {hostname} | Cmd: {full_cmd}\n"
-        sys.stderr.write(debug_start)
-        sys.stderr.flush()
-        with open("probe_debug.log", "a") as f:
-            f.write(debug_start)
+        # Handle special internal commands first
+        if probe_cmd.strip().startswith("mac-smi"):
+            parts = probe_cmd.split()
+            target_host = parts[1] if len(parts) > 1 else hostname
+            full_cmd = f"mac-smi {target_host}"
+            
+            # Immediate debug print
+            debug_start = f"\n[DEBUG] Starting Probe (Internal) | Host: {target_host} | Cmd: {full_cmd}\n"
+            sys.stderr.write(debug_start)
+            sys.stderr.flush()
+            with open("probe_debug.log", "a") as f:
+                f.write(debug_start)
+            
+            output = mac_smi(target_host)
+            success = not output.startswith("Error")
+        else:
+            full_cmd = self.app.screen._get_full_probe_cmd(probe_cmd) if isinstance(self.app.screen, DashboardScreen) else (probe_cmd if probe_cmd.startswith("nvidia-smi") else f"nvidia-smi {probe_cmd}")
+            
+            # Immediate debug print to stderr and file to verify the action started
+            debug_start = f"\n[DEBUG] Starting Probe | Host: {hostname} | Cmd: {full_cmd}\n"
+            sys.stderr.write(debug_start)
+            sys.stderr.flush()
+            with open("probe_debug.log", "a") as f:
+                f.write(debug_start)
 
-        # Run the probe command
-        executor = RemoteExecutor()
-        success, output = executor.run_command(hostname, full_cmd)
+            # Run the probe command
+            executor = RemoteExecutor()
+            success, output = executor.run_command(hostname, full_cmd)
         
         # Clean the output to remove SSH warnings
         # Since _clean_probe_output is in DashboardScreen, we can access it via app.screen if it's a DashboardScreen
@@ -498,8 +519,7 @@ class AddHostScreen(Screen):
 
         # Log to the logger, stderr, and file for maximum visibility
         status = "SUCCESS" if success else "FAILED"
-        # Use the same full_cmd logic for the log message
-        full_cmd = self.app.screen._get_full_probe_cmd(probe_cmd) if isinstance(self.app.screen, DashboardScreen) else (probe_cmd if probe_cmd.startswith("nvidia-smi") else f"nvidia-smi {probe_cmd}")
+        # Use the full_cmd determined during execution
         debug_msg = f"\n[DEBUG] Probe {status} | Host: {hostname} | Cmd: '{full_cmd}'\nOutput:\n{output}\n{'-'*60}\n"
         
         logging.debug(debug_msg)
@@ -520,8 +540,9 @@ class AddHostScreen(Screen):
             self.app.screen.update_metrics()
 
 
-class MonitorApp(App):
+class CloudmeshAIMonitorApp(App):
     """Main Textual Application with fixed CSS."""
+    title = "Cloudmesh AI Monitor Dashboard"
 
     BINDINGS = [
         Binding("escape", "quit", "Quit"),
@@ -574,7 +595,7 @@ class MonitorApp(App):
 
 
 def run_app():
-    app = MonitorApp()
+    app = CloudmeshAIMonitorApp()
     app.run()
 
 

@@ -9,7 +9,7 @@ from rich.table import Table
 from rich.panel import Panel
 
 from cloudmesh.ai.monitor.terminalgui.core import HostManager, RemoteExecutor
-from cloudmesh.ai.monitor.terminalgui.app import MonitorApp
+from cloudmesh.ai.monitor.terminalgui.app import CloudmeshAIMonitorApp
 
 console = Console()
 
@@ -140,7 +140,7 @@ def create_cli():
         """Real-time fleet dashboard."""
         gui = get_gui_framework()
         if gui == "terminalgui":
-            app = MonitorApp()
+            app = CloudmeshAIMonitorApp()
             app.run()
         elif gui == "grafana":
             console.print("[yellow]Grafana dashboard is not yet implemented.[/yellow]")

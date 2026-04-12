@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Tuple, Optional, List, Dict, Any
 import subprocess
 import requests
+import re
 from rich.console import Console
 from cloudmesh.ai.common.io import load_yaml, dump_yaml
 
@@ -152,6 +153,88 @@ class HostManager:
                 
         return ordered_hosts
 
+def mac_smi(hostname: str):
+    """
+    Returns a string mimicking:
+    utilization.gpu, temperature.gpu, memory.used, memory.total
+    """
+    try:
+        # Determine if the host is local
+        import socket
+        local_hostname = socket.gethostname()
+        is_local = hostname.lower() in ["localhost", "127.0.0.1", local_hostname.lower()]
+
+        if is_local:
+            try:
+                # 1. Get GPU and Thermal data (requires sudo)
+                cmd = ["sudo", "-n", "powermetrics", "--samplers", "gpu_power,thermal", "-n", "1", "-i", "500"]
+                res = subprocess.check_output(cmd).decode('utf-8')
+                
+                # Memory info is also local
+                mem_total_bytes = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip())
+                mem_total_mib = mem_total_bytes // (1024**2)
+                vm_stat = subprocess.check_output(["vm_stat"]).decode('utf-8')
+                pages_active = int(re.search(r"Pages active:\s+(\d+)", vm_stat).group(1))
+                mem_used_mib = (pages_active * 4096) // (1024**2)
+            except subprocess.CalledProcessError as e:
+                if e.returncode == 64:
+                    return "Error: powermetrics failed (exit 64). This usually means sudo requires a password. Please add 'youruser ALL=(ALL) NOPASSWD: /usr/bin/powermetrics' to /etc/sudoers."
+                return f"Error retrieving metrics: {e}"
+        else:
+            # Remote execution via SSH
+            # We combine the commands into one SSH call to be efficient
+            remote_cmd = (
+                "sudo -n powermetrics --samplers gpu_power,smc -n 1 -i 500 && "
+                "sysctl -n hw.memsize && "
+                "vm_stat"
+            )
+            success, res = RemoteExecutor.run_command(hostname, remote_cmd)
+            if not success:
+                return f"Error retrieving metrics from {hostname}: {res}"
+            
+            # Split the combined output
+            # powermetrics output is large, sysctl is one line, vm_stat is several
+            parts = res.split("\n\n") # This is a bit fragile, but powermetrics usually ends with a block
+            # Better: split by the known markers
+            # Since we know the order: powermetrics, then memsize, then vm_stat
+            # Let's find the last two lines/blocks
+            lines = res.splitlines()
+            # The last line of vm_stat is usually the end.
+            # The line before vm_stat starts is the memsize.
+            # Let's find the memsize line (it's just a number)
+            mem_total_mib = 0
+            mem_used_mib = 0
+            
+            # Find the line that is just a large number (memsize)
+            for i in range(len(lines)-1, -1, -1):
+                line = lines[i].strip()
+                if line.isdigit() and int(line) > 10**9:
+                    mem_total_mib = int(line) // (1024**2)
+                    # The lines after this are vm_stat
+                    vm_stat_text = "\n".join(lines[i+1:])
+                    pages_match = re.search(r"Pages active:\s+(\d+)", vm_stat_text)
+                    if pages_match:
+                        pages_active = int(pages_match.group(1))
+                        mem_used_mib = (pages_active * 4096) // (1024**2)
+                    break
+            
+            # The rest is powermetrics
+            # We can just use the whole 'res' for the regexes as they are specific
+        
+        # Parse Utilization (GPU HW active residency)
+        util_match = re.search(r"GPU HW active residency:\s+(\d+\.\d+)%", res)
+        util = util_match.group(1) if util_match else "0.0"
+
+        # Parse Temperature (GPU die temperature)
+        temp_match = re.search(r"GPU die temperature:\s+(\d+\.\d+)", res)
+        temp = temp_match.group(1) if temp_match else "N/A"
+
+        # Format: utilization, temperature, memory_used, memory_total
+        return f"{util}, {temp}, {mem_used_mib}, {mem_total_mib}"
+
+    except Exception as e:
+        return f"Error retrieving metrics: {e}"
+
 class RemoteExecutor:
     """Handles execution of commands on remote hosts via SSH."""
     @staticmethod
@@ -166,14 +249,31 @@ class RemoteExecutor:
     @staticmethod
     def run_command(hostname: str, command: str) -> Tuple[bool, str]:
         """Runs a non-interactive command and returns (success, output/error)."""
-        cmd = ["ssh", hostname, command]
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
-                return True, result.stdout.strip()
-            return False, result.stderr.strip() or f"Command failed with return code {result.returncode}"
-        except Exception as e:
-            return False, str(e)
+        import socket
+        local_hostname = socket.gethostname()
+        is_local = hostname.lower() in ["localhost", "127.0.0.1", local_hostname.lower()]
+
+        if is_local:
+            # Run locally without SSH
+            cmd = ["/bin/zsh", "-c", command] if " " in command else [command]
+            # If it's a complex command string, we use the shell
+            try:
+                result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    return True, result.stdout.strip()
+                return False, result.stderr.strip() or f"Command failed with return code {result.returncode}"
+            except Exception as e:
+                return False, str(e)
+        else:
+            # Run via SSH
+            cmd = ["ssh", hostname, command]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    return True, result.stdout.strip()
+                return False, result.stderr.strip() or f"Command failed with return code {result.returncode}"
+            except Exception as e:
+                return False, str(e)
 
     @staticmethod
     def probe_hardware(hostname: str) -> Dict[str, str]:
