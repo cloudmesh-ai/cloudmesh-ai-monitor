@@ -22,7 +22,7 @@ from textual.binding import Binding
 from textual.events import Key
 
 # Ensure these are available in your PYTHONPATH
-from cloudmesh.ai.monitor.terminalgui.core import HostManager, RemoteExecutor, mac_smi
+from cloudmesh.ai.monitor.terminalgui.core import HostManager, RemoteExecutor, cm_mac_smi, cm_spark_smi
 
 
 class DetailScreen(ModalScreen):
@@ -33,7 +33,7 @@ class DetailScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         # Use the original columns from the dashboard
-        cols = ["Hostname", "Label", "Active", "Interval", "GPU Usage", "GPU Temp", "Memory Usage (GB)"]
+        cols = ["Hostname", "Label", "Active", "Interval", "GPU Usage", "GPU Temp", "Memory Usage (GB)", "CPU Usage", "CPU Temp"]
         details = ""
         for col, val in zip(cols, self.row_data):
             details += f"[bold cyan]{col}:[/]   {val}\n"
@@ -94,6 +94,12 @@ class DashboardScreen(Screen):
             return probe_cmd
         return f"nvidia-smi {probe_cmd}"
 
+    def _format_metric(self, value: str) -> str:
+        """Returns an empty string if the value is 'N/A', otherwise returns the value."""
+        if not value or "N/A" in value:
+            return ""
+        return value
+
     BINDINGS = [
         Binding("a", "add_host", "Add Host"),
         Binding("e", "edit_host", "Edit Host"),
@@ -129,6 +135,8 @@ class DashboardScreen(Screen):
             "GPU Usage",
             "GPU Temp",
             "Memory Usage (GB)",
+            "CPU Usage",
+            "CPU Temp",
         )
         self.update_metrics()
         self.set_interval(1, self.tick)
@@ -185,6 +193,8 @@ class DashboardScreen(Screen):
             gpu_usage = info.get("gpu_usage", "N/A")
             gpu_temp = info.get("gpu_temp", "N/A")
             mem_usage = info.get("mem_usage", "N/A")
+            cpu_usage = info.get("cpu_usage", "N/A")
+            cpu_temp = info.get("cpu_temp", "N/A")
             active_status = "True" if active else "False"
 
             # Color the interval based on last probe success
@@ -197,7 +207,15 @@ class DashboardScreen(Screen):
                 interval_str = f"{interval}s"
 
             table.add_row(
-                label, hostname, active_status, interval_str, gpu_usage, gpu_temp, mem_usage
+                label, 
+                hostname, 
+                active_status, 
+                interval_str, 
+                self._format_metric(gpu_usage), 
+                self._format_metric(gpu_temp), 
+                self._format_metric(mem_usage), 
+                self._format_metric(cpu_usage), 
+                self._format_metric(cpu_temp)
             )
 
         # Restore cursor position
@@ -221,12 +239,18 @@ class DashboardScreen(Screen):
             return
 
         # Use custom probe command if available, otherwise use default
-        probe_cmd = info.get("probe_cmd", "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits")
+        probe_cmd_raw = info.get("probe_cmd", "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits")
+        probe_cmd = probe_cmd_raw.strip()
         
-        if probe_cmd.startswith("mac-smi"):
+        if probe_cmd.startswith("cm-mac-smi"):
             parts = probe_cmd.split()
             target_host = parts[1] if len(parts) > 1 else hostname
-            gpu_data = mac_smi(target_host)
+            gpu_data = cm_mac_smi(target_host)
+            success = not gpu_data.startswith("Error")
+        elif probe_cmd.startswith("cm-spark-smi"):
+            parts = probe_cmd.split()
+            target_host = parts[1] if len(parts) > 1 else hostname
+            gpu_data = cm_spark_smi(target_host)
             success = not gpu_data.startswith("Error")
         else:
             executor = RemoteExecutor()
@@ -239,7 +263,7 @@ class DashboardScreen(Screen):
         
         if success and gpu_data:
             lines = gpu_data.splitlines()
-            utils, temps, mems = [], [], []
+            utils, temps, mems, cpu_utils, cpu_temps = [], [], [], [], []
             for line in lines:
                 parts = line.split(",")
                 if len(parts) >= 4:
@@ -252,15 +276,35 @@ class DashboardScreen(Screen):
                         mems.append(f"{used_gb:.2f}/{total_gb:.2f}")
                     except (ValueError, IndexError):
                         mems.append(f"{p[2]}/{p[3]}")
-
+                    
+                    if len(parts) >= 6:
+                        cpu_utils.append(f"{p[4]}%")
+                        cpu_temps.append(f"{p[5]}°C")
+ 
             gpu_usage = " ".join(utils) or "N/A"
             gpu_temp = " ".join(temps) or "N/A"
             mem_usage = " ".join(mems) or "N/A"
+            cpu_usage = " ".join(cpu_utils) or "N/A"
+            cpu_temp = " ".join(cpu_temps) or "N/A"
         else:
-            gpu_usage, gpu_temp, mem_usage = "N/A", "N/A", "N/A"
+            gpu_usage, gpu_temp, mem_usage, cpu_usage, cpu_temp = "N/A", "N/A", "N/A", "N/A", "N/A"
+ 
+        # For non-Mac/non-Spark hosts, we need to fetch CPU metrics separately as nvidia-smi doesn't provide them
+        if not probe_cmd.startswith("mac-smi") and not probe_cmd.startswith("spark-smi") and success:
+            executor = RemoteExecutor()
+            # CPU Usage: 100% - idle
+            cpu_usage_cmd = "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1\"%\"}'"
+            # CPU Temp: try sensors, then fallback to sysfs
+            cpu_temp_cmd = "sensors | grep 'Package id 0' | awk '{print $4}' || cat /sys/class/thermal/thermal_zone0/temp | awk '{print $1/1000\"°C\"}'"
+            
+            cpu_u_success, cpu_u_val = executor.run_command(hostname, cpu_usage_cmd)
+            cpu_t_success, cpu_t_val = executor.run_command(hostname, cpu_temp_cmd)
+            
+            if cpu_u_success: cpu_usage = cpu_u_val
+            if cpu_t_success: cpu_temp = cpu_t_val
 
         hm = HostManager()
-        hm.update_metrics(label, gpu_usage, gpu_temp, mem_usage, last_probe_success=success)
+        hm.update_metrics(label, gpu_usage, gpu_temp, mem_usage, cpu_usage=cpu_usage, cpu_temp=cpu_temp, last_probe_success=success)
         self.app.call_from_thread(self.update_metrics)
 
     def action_toggle_active(self) -> None:
@@ -477,10 +521,11 @@ class AddHostScreen(Screen):
         self.app.notify(f"Probing {hostname}...", severity="information")
         
         # Handle special internal commands first
-        if probe_cmd.strip().startswith("mac-smi"):
-            parts = probe_cmd.split()
+        stripped_cmd = probe_cmd.strip()
+        if stripped_cmd.startswith("cm-mac-smi"):
+            parts = stripped_cmd.split()
             target_host = parts[1] if len(parts) > 1 else hostname
-            full_cmd = f"mac-smi {target_host}"
+            full_cmd = stripped_cmd
             
             # Immediate debug print
             debug_start = f"\n[DEBUG] Starting Probe (Internal) | Host: {target_host} | Cmd: {full_cmd}\n"
@@ -489,7 +534,21 @@ class AddHostScreen(Screen):
             with open("probe_debug.log", "a") as f:
                 f.write(debug_start)
             
-            output = mac_smi(target_host)
+            output = cm_mac_smi(target_host)
+            success = not output.startswith("Error")
+        elif stripped_cmd.startswith("cm-spark-smi"):
+            parts = stripped_cmd.split()
+            target_host = parts[1] if len(parts) > 1 else hostname
+            full_cmd = stripped_cmd
+            
+            # Immediate debug print
+            debug_start = f"\n[DEBUG] Starting Probe (Internal) | Host: {target_host} | Cmd: {full_cmd}\n"
+            sys.stderr.write(debug_start)
+            sys.stderr.flush()
+            with open("probe_debug.log", "a") as f:
+                f.write(debug_start)
+            
+            output = cm_spark_smi(target_host)
             success = not output.startswith("Error")
         else:
             full_cmd = self.app.screen._get_full_probe_cmd(probe_cmd) if isinstance(self.app.screen, DashboardScreen) else (probe_cmd if probe_cmd.startswith("nvidia-smi") else f"nvidia-smi {probe_cmd}")

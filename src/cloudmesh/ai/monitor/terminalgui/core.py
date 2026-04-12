@@ -61,6 +61,8 @@ class HostManager:
                 "gpu_usage": "N/A",
                 "gpu_temp": "N/A",
                 "mem_usage": "N/A",
+                "cpu_usage": "N/A",
+                "cpu_temp": "N/A",
                 "refresh_interval": refresh_interval,
                 "probe_cmd": probe_cmd or default_probe
             }
@@ -71,12 +73,14 @@ class HostManager:
                     order.append(label)
         self.save()
 
-    def update_metrics(self, label: str, gpu_usage: str, gpu_temp: str, mem_usage: str, last_probe_success=None):
+    def update_metrics(self, label: str, gpu_usage: str, gpu_temp: str, mem_usage: str, cpu_usage: str = "N/A", cpu_temp: str = "N/A", last_probe_success=None):
         """Updates the metrics for a host in the configuration file."""
         if label in self.hosts_data:
             self.hosts_data[label]["gpu_usage"] = gpu_usage
             self.hosts_data[label]["gpu_temp"] = gpu_temp
             self.hosts_data[label]["mem_usage"] = mem_usage
+            self.hosts_data[label]["cpu_usage"] = cpu_usage
+            self.hosts_data[label]["cpu_temp"] = cpu_temp
             if last_probe_success is not None:
                 self.hosts_data[label]["last_probe_success"] = last_probe_success
             self.save()
@@ -153,7 +157,98 @@ class HostManager:
                 
         return ordered_hosts
 
-def mac_smi(hostname: str):
+def cm_spark_smi(hostname: str):
+    """
+    Returns a string mimicking:
+    utilization.gpu, temperature.gpu, memory.used, memory.total, cpu_util, cpu_temp
+    Designed for NVIDIA Spark/GPU nodes.
+    Uses nvidia-smi for GPU and standard Linux tools for CPU/RAM.
+    """
+    try:
+        # 1. GPU Metrics via nvidia-smi (Strictly NVIDIA)
+        # We query utilization, temperature, and memory.
+        gpu_cmd = "nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits"
+        success_gpu, gpu_res = RemoteExecutor.run_command(hostname, gpu_cmd)
+        if not success_gpu or not gpu_res:
+            return f"Error: nvidia-smi failed on {hostname}"
+        
+        # Take the first GPU if multiple exist
+        gpu_line = gpu_res.splitlines()[0].strip() # util, temp, used, total
+        gpu_parts = [x.strip() for x in gpu_line.split(',')]
+        
+        if len(gpu_parts) >= 4:
+            gpu_util, gpu_temp, gpu_mem_used, gpu_mem_total = gpu_parts[:4]
+        else:
+            gpu_util, gpu_temp = gpu_parts[0], gpu_parts[1]
+            gpu_mem_used, gpu_mem_total = "N/A", "N/A"
+
+        # Determine if we can use nvidia-smi memory or need fallback
+        if gpu_mem_used != "N/A" and "[N/A]" not in gpu_mem_used and gpu_mem_total != "N/A" and "[N/A]" not in gpu_mem_total:
+            mem_used, mem_total = gpu_mem_used, gpu_mem_total
+        else:
+            # Fallback: Get System Memory via /proc/meminfo
+            mem_used, mem_total = "N/A", "N/A"
+            success_mem, mem_res = RemoteExecutor.run_command(hostname, "cat /proc/meminfo")
+            if success_mem and mem_res:
+                mem_data = {}
+                for line in mem_res.splitlines():
+                    if ':' in line:
+                        key, val = line.split(':', 1)
+                        match = re.search(r"(\d+)", val)
+                        if match:
+                            mem_data[key.strip()] = int(match.group(1))
+                
+                total_kb = mem_data.get("MemTotal", 0)
+                avail_kb = mem_data.get("MemAvailable", mem_data.get("MemFree", 0))
+                if total_kb > 0:
+                    mem_total = str(round(total_kb / 1024, 2))
+                    mem_used = str(round((total_kb - avail_kb) / 1024, 2))
+
+        # 2. CPU Usage via top (Linux) - Get raw top summary and parse in Python
+        cpu_u_cmd = "top -bn1 | head -n 7"
+        success_cpu_u, cpu_u_res = RemoteExecutor.run_command(hostname, cpu_u_cmd)
+        cpu_util = "N/A"
+        if success_cpu_u and cpu_u_res:
+            for line in cpu_u_res.splitlines():
+                if "Cpu(s)" in line:
+                    # Look for the idle percentage (e.g., "99.4 id")
+                    match = re.search(r"(\d+\.\d+)\s+id", line)
+                    if match:
+                        try:
+                            idle = float(match.group(1))
+                            cpu_util = str(round(100.0 - idle, 2))
+                        except ValueError:
+                            pass
+                    break
+
+        # 3. CPU Temp via sensors/sysfs (Linux) - Get raw data and parse in Python
+        cpu_temp = "N/A"
+        # Try sensors first
+        success_s, s_res = RemoteExecutor.run_command(hostname, "sensors")
+        if success_s and s_res:
+            for line in s_res.splitlines():
+                if "Package id 0" in line or "Core 0" in line:
+                    # Extract temperature (e.g., "+32.0°C")
+                    temp_match = re.search(r"(\+?\d+\.\d+)", line)
+                    if temp_match:
+                        cpu_temp = temp_match.group(1).replace("+", "")
+                        break
+        
+        # Fallback to sysfs if sensors failed or didn't find temp
+        if cpu_temp == "N/A":
+            success_t, t_res = RemoteExecutor.run_command(hostname, "cat /sys/class/thermal/thermal_zone*/temp")
+            if success_t and t_res:
+                first_temp = t_res.splitlines()[0].strip()
+                if first_temp.isdigit():
+                    cpu_temp = str(round(int(first_temp) / 1000.0, 2))
+
+        # The app.py expects: util, temp, mem_used, mem_total, cpu_util, cpu_temp
+        return f"{gpu_util}, {gpu_temp}, {mem_used}, {mem_total}, {cpu_util}, {cpu_temp}"
+
+    except Exception as e:
+        return f"Error retrieving spark metrics: {e}"
+
+def cm_mac_smi(hostname: str):
     """
     Returns a string mimicking:
     utilization.gpu, temperature.gpu, memory.used, memory.total
@@ -184,7 +279,7 @@ def mac_smi(hostname: str):
             # Remote execution via SSH
             # We combine the commands into one SSH call to be efficient
             remote_cmd = (
-                "sudo -n powermetrics --samplers gpu_power,smc -n 1 -i 500 && "
+                "sudo -n powermetrics --samplers gpu_power,thermal -n 1 -i 500 && "
                 "sysctl -n hw.memsize && "
                 "vm_stat"
             )
@@ -225,12 +320,25 @@ def mac_smi(hostname: str):
         util_match = re.search(r"GPU HW active residency:\s+(\d+\.\d+)%", res)
         util = util_match.group(1) if util_match else "0.0"
 
-        # Parse Temperature (GPU die temperature)
-        temp_match = re.search(r"GPU die temperature:\s+(\d+\.\d+)", res)
+        # Parse Temperature (GPU die temperature) - very flexible regex
+        temp_match = re.search(r"GPU.*?(?:temperature|temp).*?(\d+\.\d+)", res, re.IGNORECASE)
         temp = temp_match.group(1) if temp_match else "N/A"
 
-        # Format: utilization, temperature, memory_used, memory_total
-        return f"{util}, {temp}, {mem_used_mib}, {mem_total_mib}"
+        # Parse CPU Usage (Average of all cores)
+        cpu_match = re.search(r"CPU average utilization:\s+(\d+\.\d+)%", res)
+        cpu_util = cpu_match.group(1) if cpu_match else "0.0"
+
+        # Parse CPU Temperature - very flexible regex for different Mac chips/samplers
+        cpu_temp_match = re.search(r"CPU.*?(?:temperature|temp).*?(\d+\.\d+)", res, re.IGNORECASE)
+        if not cpu_temp_match:
+            # Fallback for thermal sampler which might just say "Temperature: ..." or "Die temperature: ..."
+            cpu_temp_match = re.search(r"(?:Temperature|Die temperature).*?(\d+\.\d+)", res, re.IGNORECASE)
+        cpu_temp = cpu_temp_match.group(1) if cpu_temp_match else "N/A"
+
+ 
+
+        # Format: utilization, temperature, memory_used, memory_total, cpu_util, cpu_temp
+        return f"{util}, {temp}, {mem_used_mib}, {mem_total_mib}, {cpu_util}, {cpu_temp}"
 
     except Exception as e:
         return f"Error retrieving metrics: {e}"
@@ -249,31 +357,34 @@ class RemoteExecutor:
     @staticmethod
     def run_command(hostname: str, command: str) -> Tuple[bool, str]:
         """Runs a non-interactive command and returns (success, output/error)."""
+        # Print the command being issued in black for debugging/transparency
+        console.print(f"[black]Executing on {hostname}: {command}[/black]")
+        
         import socket
         local_hostname = socket.gethostname()
         is_local = hostname.lower() in ["localhost", "127.0.0.1", local_hostname.lower()]
 
         if is_local:
             # Run locally without SSH
-            cmd = ["/bin/zsh", "-c", command] if " " in command else [command]
-            # If it's a complex command string, we use the shell
             try:
                 result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
-                    return True, result.stdout.strip()
-                return False, result.stderr.strip() or f"Command failed with return code {result.returncode}"
+                success = result.returncode == 0
+                output = result.stdout.strip() if success else (result.stderr.strip() or f"Command failed with return code {result.returncode}")
             except Exception as e:
-                return False, str(e)
+                success, output = False, str(e)
         else:
             # Run via SSH
             cmd = ["ssh", hostname, command]
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
-                    return True, result.stdout.strip()
-                return False, result.stderr.strip() or f"Command failed with return code {result.returncode}"
+                success = result.returncode == 0
+                output = result.stdout.strip() if success else (result.stderr.strip() or f"Command failed with return code {result.returncode}")
             except Exception as e:
-                return False, str(e)
+                success, output = False, str(e)
+        
+        # Print the result of the command in black
+        console.print(f"[black]Result: {output}[/black]")
+        return success, output
 
     @staticmethod
     def probe_hardware(hostname: str) -> Dict[str, str]:

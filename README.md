@@ -100,6 +100,50 @@ cloudmesh-ai-monitor check-exporter --url http://dgx-node:9100/metrics
 cloudmesh-ai-monitor oom-check
 ```
 
+## Dashboard Manual
+
+The `cloudmesh-ai-monitor dashboard` provides a real-time TUI for monitoring your AI fleet.
+
+### Monitoring Logic
+The dashboard works by executing a **Probe Command** on each active remote host via SSH at a regular interval. The output of this command is parsed to update the GPU utilization, temperature, and memory usage displayed in the UI.
+
+### Probe Commands
+Depending on the hardware of the remote machine, you should use different probe commands. You can configure these in the TUI "Edit Host" screen or directly in your configuration.
+
+#### NVIDIA GPUs (Default)
+For NVIDIA systems, the monitor uses `nvidia-smi`. The default query is:
+```bash
+nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits
+```
+*Note: If you enter only the query part in the config, the system automatically prepends `nvidia-smi`.*
+
+#### Apple Silicon (Mac)
+For Mac hosts, use `cm-mac-smi`. Since `cm-mac-smi` typically requires root privileges, you should use:
+```bash
+sudo cm-mac-smi
+```
+
+#### NVIDIA Spark Nodes
+For NVIDIA Spark clusters, use `cm-spark-smi`. This probe aggregates GPU metrics from `nvidia-smi` and system-wide CPU and memory usage:
+```bash
+cm-spark-smi
+```
+
+**Handling Sudo on Mac:**
+To allow the monitor to run this command without an interactive password prompt via SSH, add the following line to the `/etc/sudoers` file on the remote Mac host (using `visudo`):
+```text
+your_username ALL=(ALL) NOPASSWD: /usr/local/bin/cm-mac-smi
+```
+*(Replace `your_username` with the SSH user and verify the path to `cm-mac-smi` using `which cm-mac-smi`)*
+
+#### Custom Probes
+You can use any command that returns hardware metrics. If you use a custom command, ensure it returns data in a format the monitor can parse, or use the **Probe** button in the TUI to verify the raw output.
+
+### TUI Shortcuts
+- `p`: Manually trigger a probe for the selected host.
+- `u`: Update host configuration (Label, Probe Command, Refresh Interval).
+- `Enter`: Open host details/settings.
+
 ## Key Achievements
 
 - **Textual TUI**: Implemented a professional Terminal User Interface using the `textual` framework, providing a real-time fleet dashboard and an interactive host management setup screen.
