@@ -22,7 +22,7 @@ from textual.binding import Binding
 from textual.events import Key
 
 # Ensure these are available in your PYTHONPATH
-from cloudmesh.ai.monitor.terminalgui.core import HostManager, RemoteExecutor, cm_mac_smi, cm_spark_smi
+from cloudmesh.ai.monitor.terminalgui.core import HostManager, RemoteExecutor, cm_mac_smi, cm_spark_smi, cm_dgx_smi
 
 
 class DetailScreen(ModalScreen):
@@ -252,6 +252,27 @@ class DashboardScreen(Screen):
             target_host = parts[1] if len(parts) > 1 else hostname
             gpu_data = cm_spark_smi(target_host)
             success = not gpu_data.startswith("Error")
+        elif probe_cmd.startswith("cm-dgx-smi"):
+            parts = probe_cmd.split()
+            # Format: cm-dgx-smi [target_host] [devices]
+            if len(parts) > 2:
+                target_host = parts[1]
+                devices = parts[2]
+            elif len(parts) == 2:
+                # Could be 'cm-dgx-smi target_host' or 'cm-dgx-smi devices'
+                # If the second part contains a comma, it's likely devices
+                if "," in parts[1]:
+                    target_host = hostname
+                    devices = parts[1]
+                else:
+                    target_host = parts[1]
+                    devices = "0"
+            else:
+                target_host = hostname
+                devices = "0"
+            
+            gpu_data = cm_dgx_smi(target_host, devices)
+            success = not gpu_data.startswith("Error")
         else:
             executor = RemoteExecutor()
             full_cmd = self._get_full_probe_cmd(probe_cmd)
@@ -264,18 +285,26 @@ class DashboardScreen(Screen):
         if success and gpu_data:
             lines = gpu_data.splitlines()
             utils, temps, mems, cpu_utils, cpu_temps = [], [], [], [], []
+            # Check if this is a special cm- probe that already provides formatted memory
+            is_special_probe = any(probe_cmd.startswith(prefix) for prefix in ["cm-mac-smi", "cm-spark-smi", "cm-dgx-smi"])
+
             for line in lines:
                 parts = line.split(",")
                 if len(parts) >= 4:
                     p = [x.strip() for x in parts]
                     utils.append(f"{p[0]}%")
                     temps.append(f"{p[1]}°C")
-                    try:
-                        used_gb = float(p[2]) / 1024
-                        total_gb = float(p[3]) / 1024
-                        mems.append(f"{used_gb:.2f}/{total_gb:.2f}")
-                    except (ValueError, IndexError):
-                        mems.append(f"{p[2]}/{p[3]}")
+                    
+                    if is_special_probe:
+                        # Special probes already return formatted memory in p[2] (e.g., "0.7%/24GB")
+                        mems.append(p[2])
+                    else:
+                        try:
+                            used_gb = float(p[2]) / 1024
+                            total_gb = float(p[3]) / 1024
+                            mems.append(f"{used_gb:.2f}/{total_gb:.2f}")
+                        except (ValueError, IndexError):
+                            mems.append(f"{p[2]}/{p[3]}")
                     
                     if len(parts) >= 6:
                         cpu_utils.append(f"{p[4]}%")
@@ -289,8 +318,8 @@ class DashboardScreen(Screen):
         else:
             gpu_usage, gpu_temp, mem_usage, cpu_usage, cpu_temp = "N/A", "N/A", "N/A", "N/A", "N/A"
  
-        # For non-Mac/non-Spark hosts, we need to fetch CPU metrics separately as nvidia-smi doesn't provide them
-        if not probe_cmd.startswith("mac-smi") and not probe_cmd.startswith("spark-smi") and success:
+        # For non-Mac/non-Spark/non-DGX hosts, we need to fetch CPU metrics separately as nvidia-smi doesn't provide them
+        if not probe_cmd.startswith("cm-mac-smi") and not probe_cmd.startswith("cm-spark-smi") and not probe_cmd.startswith("cm-dgx-smi") and success:
             executor = RemoteExecutor()
             # CPU Usage: 100% - idle
             cpu_usage_cmd = "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1\"%\"}'"
@@ -549,6 +578,34 @@ class AddHostScreen(Screen):
                 f.write(debug_start)
             
             output = cm_spark_smi(target_host)
+            success = not output.startswith("Error")
+        elif stripped_cmd.startswith("cm-dgx-smi"):
+            parts = stripped_cmd.split()
+            # Format: cm-dgx-smi [target_host] [devices]
+            if len(parts) > 2:
+                target_host = parts[1]
+                devices = parts[2]
+            elif len(parts) == 2:
+                if "," in parts[1]:
+                    target_host = hostname
+                    devices = parts[1]
+                else:
+                    target_host = parts[1]
+                    devices = "0"
+            else:
+                target_host = hostname
+                devices = "0"
+            
+            full_cmd = stripped_cmd
+            
+            # Immediate debug print
+            debug_start = f"\n[DEBUG] Starting Probe (Internal) | Host: {target_host} | Devices: {devices} | Cmd: {full_cmd}\n"
+            sys.stderr.write(debug_start)
+            sys.stderr.flush()
+            with open("probe_debug.log", "a") as f:
+                f.write(debug_start)
+            
+            output = cm_dgx_smi(target_host, devices)
             success = not output.startswith("Error")
         else:
             full_cmd = self.app.screen._get_full_probe_cmd(probe_cmd) if isinstance(self.app.screen, DashboardScreen) else (probe_cmd if probe_cmd.startswith("nvidia-smi") else f"nvidia-smi {probe_cmd}")

@@ -157,6 +157,158 @@ class HostManager:
                 
         return ordered_hosts
 
+def cm_dgx_smi(hostname: str, devices: str = "0"):
+    """
+    Returns a string mimicking:
+    utilization.gpu, temperature.gpu, memory.used, memory.total, cpu_util, cpu_temp
+    Designed for NVIDIA DGX nodes.
+    Supports multiple GPUs via the 'devices' parameter (e.g., "0,1,2,4").
+    Uses nvidia-smi for GPU and standard Linux tools for CPU/RAM.
+    """
+    try:
+        # 1. GPU Metrics via nvidia-smi
+        # We include 'index' to filter by the requested devices
+        gpu_cmd = "nvidia-smi --query-gpu=index,utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits"
+        success_gpu, gpu_res = RemoteExecutor.run_command(hostname, gpu_cmd)
+        if not success_gpu or not gpu_res:
+            return f"Error: nvidia-smi failed on {hostname}"
+        
+        requested_devices = [d.strip() for d in devices.split(",")]
+        
+        utils, temps, percs, totals = [], [], [], []
+        
+        for line in gpu_res.splitlines():
+            parts = [x.strip() for x in line.split(',')]
+            if len(parts) >= 5:
+                idx, util, temp, used, total = parts[:5]
+                if idx in requested_devices:
+                    utils.append(util)
+                    temps.append(temp)
+                    try:
+                        u_val = float(used)
+                        t_val = float(total)
+                        perc = round((u_val / t_val) * 100, 1) if t_val > 0 else 0
+                        gb = round(t_val / 1024, 1)
+                        percs.append(f"{perc}%")
+                        totals.append(gb)
+                    except ValueError:
+                        percs.append("N/A")
+                        totals.append(None)
+        
+        if not utils:
+            return f"Error: No matching GPUs found for devices {devices} on {hostname}"
+            
+        gpu_util = " ".join(utils)
+        gpu_temp = " ".join(temps)
+        
+        # Memory formatting: a% b% c% d% (count*sizeGB) or a% b% c% d% (s1, s2, ... GB)
+        perc_str = " ".join(percs)
+        valid_totals = [t for t in totals if t is not None]
+        
+        if not valid_totals:
+            gpu_mem_used = "N/A"
+            gpu_mem_total = "N/A"
+        elif len(set(valid_totals)) == 1:
+            # All same size
+            size = valid_totals[0]
+            count = len(valid_totals)
+            # Use int if it's a whole number for cleaner look (e.g. 80GB instead of 80.0GB)
+            size_val = int(size) if size == int(size) else size
+            if count == 1:
+                gpu_mem_used = f"{perc_str} [grey50]({size_val}GB)[/grey50]"
+                gpu_mem_total = f"[grey50]{size_val}GB[/grey50]"
+            else:
+                gpu_mem_used = f"{perc_str} [grey50]({count}*{size_val}GB)[/grey50]"
+                gpu_mem_total = f"[grey50]{count}*{size_val}GB[/grey50]"
+        else:
+            # Different sizes
+            size_list = ", ".join([str(int(t) if t == int(t) else t) for t in valid_totals])
+            gpu_mem_used = f"{perc_str} [grey50]({size_list} GB)[/grey50]"
+            gpu_mem_total = f"[grey50]{size_list} GB[/grey50]"
+
+        # 2. CPU Usage via top
+        cpu_u_cmd = "top -bn1 | head -n 7"
+        success_cpu_u, cpu_u_res = RemoteExecutor.run_command(hostname, cpu_u_cmd)
+        cpu_util = "N/A"
+        if success_cpu_u and cpu_u_res:
+            for line in cpu_u_res.splitlines():
+                if "Cpu(s)" in line:
+                    match = re.search(r"(\d+\.\d+)\s+id", line)
+                    if match:
+                        try:
+                            idle = float(match.group(1))
+                            cpu_util = str(round(100.0 - idle, 2))
+                        except ValueError:
+                            pass
+                    break
+
+        # 3. CPU Temp via sensors/sysfs
+        cpu_temp = "N/A"
+        success_s, s_res = RemoteExecutor.run_command(hostname, "sensors")
+        if success_s and s_res:
+            # Try specific labels first
+            for line in s_res.splitlines():
+                if any(label in line for label in ["Package id 0", "Core 0", "CPU Temp", "Composite"]):
+                    temp_match = re.search(r"(\+?\d+\.\d+)", line)
+                    if temp_match:
+                        cpu_temp = temp_match.group(1).replace("+", "")
+                        break
+            
+            # Fallback: just find the first temperature-looking value in sensors output
+            if cpu_temp == "N/A":
+                temp_match = re.search(r"(\+?\d+\.\d+)\s*°C", s_res)
+                if temp_match:
+                    cpu_temp = temp_match.group(1).replace("+", "")
+        
+        if cpu_temp == "N/A":
+            # 1. Try sysfs hwmon (most common on modern Ubuntu/DGX)
+            # Broaden search to any file containing 'temp' and 'input'
+            success_hw, hw_res = RemoteExecutor.run_command(hostname, "find /sys/class/hwmon/hwmon* -name '*temp*input*' -exec cat {} + 2>/dev/null")
+            if success_hw and hw_res:
+                hw_temps = []
+                for line in hw_res.splitlines():
+                    val = line.strip()
+                    if val.isdigit():
+                        hw_temps.append(int(val))
+                if hw_temps:
+                    # hwmon temps are usually in millidegrees
+                    cpu_temp = str(round(max(hw_temps) / 1000.0, 2))
+
+        if cpu_temp == "N/A":
+            # 2. Try thermal_zone
+            # Broaden search to any file containing 'temp'
+            success_t, t_res = RemoteExecutor.run_command(hostname, "find /sys/class/thermal/thermal_zone* -name '*temp*' -exec cat {} + 2>/dev/null")
+            if success_t and t_res:
+                t_temps = []
+                for line in t_res.splitlines():
+                    val = line.strip()
+                    if val.isdigit():
+                        t_temps.append(int(val))
+                if t_temps:
+                    cpu_temp = str(round(max(t_temps) / 1000.0, 2))
+
+        if cpu_temp == "N/A":
+            # 2b. Direct path fallbacks (last resort for sysfs)
+            # Try the most common paths directly
+            direct_paths = [
+                "/sys/class/thermal/thermal_zone0/temp",
+                "/sys/class/hwmon/hwmon0/temp1_input",
+                "/sys/class/hwmon/hwmon1/temp1_input",
+                "/sys/class/hwmon/hwmon2/temp1_input",
+            ]
+            for path in direct_paths:
+                success_p, p_res = RemoteExecutor.run_command(hostname, f"cat {path} 2>/dev/null")
+                if success_p and p_res:
+                    val = p_res.strip()
+                    if val.isdigit():
+                        cpu_temp = str(round(int(val) / 1000.0, 2))
+                        break
+
+        return f"{gpu_util}, {gpu_temp}, {gpu_mem_used}, {gpu_mem_total}, {cpu_util}, {cpu_temp}"
+
+    except Exception as e:
+        return f"Error retrieving DGX metrics: {e}"
+
 def cm_spark_smi(hostname: str):
     """
     Returns a string mimicking:
@@ -172,22 +324,35 @@ def cm_spark_smi(hostname: str):
         if not success_gpu or not gpu_res:
             return f"Error: nvidia-smi failed on {hostname}"
         
-        # Take the first GPU if multiple exist
-        gpu_line = gpu_res.splitlines()[0].strip() # util, temp, used, total
-        gpu_parts = [x.strip() for x in gpu_line.split(',')]
-        
-        if len(gpu_parts) >= 4:
-            gpu_util, gpu_temp, gpu_mem_used, gpu_mem_total = gpu_parts[:4]
-        else:
-            gpu_util, gpu_temp = gpu_parts[0], gpu_parts[1]
-            gpu_mem_used, gpu_mem_total = "N/A", "N/A"
+        # Process all GPUs to support the requested formatting
+        utils, temps, percs, totals = [], [], [], []
+        for line in gpu_res.splitlines():
+            parts = [x.strip() for x in line.split(',')]
+            if len(parts) >= 4:
+                u, t, used, total = parts[:4]
+                utils.append(u)
+                temps.append(t)
+                try:
+                    u_val = float(used)
+                    t_val = float(total)
+                    perc = round((u_val / t_val) * 100, 1) if t_val > 0 else 0
+                    gb = round(t_val / 1024, 1)
+                    percs.append(f"{perc}%")
+                    totals.append(gb)
+                except ValueError:
+                    percs.append("N/A")
+                    totals.append(None)
 
-        # Determine if we can use nvidia-smi memory or need fallback
-        if gpu_mem_used != "N/A" and "[N/A]" not in gpu_mem_used and gpu_mem_total != "N/A" and "[N/A]" not in gpu_mem_total:
-            mem_used, mem_total = gpu_mem_used, gpu_mem_total
-        else:
-            # Fallback: Get System Memory via /proc/meminfo
-            mem_used, mem_total = "N/A", "N/A"
+        if not utils:
+            return f"Error: nvidia-smi failed on {hostname}"
+
+        gpu_util = " ".join(utils)
+        gpu_temp = " ".join(temps)
+
+        # Memory formatting logic
+        valid_totals = [t for t in totals if t is not None]
+        if not valid_totals:
+            # Fallback to system memory if no GPU memory found
             success_mem, mem_res = RemoteExecutor.run_command(hostname, "cat /proc/meminfo")
             if success_mem and mem_res:
                 mem_data = {}
@@ -197,12 +362,35 @@ def cm_spark_smi(hostname: str):
                         match = re.search(r"(\d+)", val)
                         if match:
                             mem_data[key.strip()] = int(match.group(1))
-                
                 total_kb = mem_data.get("MemTotal", 0)
                 avail_kb = mem_data.get("MemAvailable", mem_data.get("MemFree", 0))
                 if total_kb > 0:
-                    mem_total = str(round(total_kb / 1024, 2))
-                    mem_used = str(round((total_kb - avail_kb) / 1024, 2))
+                    total_gb = round(total_kb / (1024*1024), 1)
+                    used_gb = total_gb - round(avail_kb / (1024*1024), 1)
+                    perc = round((used_gb / total_gb) * 100, 1) if total_gb > 0 else 0
+                    size_val = int(total_gb) if total_gb == int(total_gb) else total_gb
+                    mem_used = f"{perc}% [grey50]({size_val}GB)[/grey50]"
+                    mem_total = f"[grey50]{size_val}GB[/grey50]"
+                else:
+                    mem_used, mem_total = "N/A", "N/A"
+            else:
+                mem_used, mem_total = "N/A", "N/A"
+        else:
+            perc_str = " ".join(percs)
+            if len(set(valid_totals)) == 1:
+                size = valid_totals[0]
+                count = len(valid_totals)
+                size_val = int(size) if size == int(size) else size
+                if count == 1:
+                    mem_used = f"{perc_str} [grey50]({size_val}GB)[/grey50]"
+                    mem_total = f"[grey50]{size_val}GB[/grey50]"
+                else:
+                    mem_used = f"{perc_str} [grey50]({count}*{size_val}GB)[/grey50]"
+                    mem_total = f"[grey50]{count}*{size_val}GB[/grey50]"
+            else:
+                size_list = ", ".join([str(int(t) if t == int(t) else t) for t in valid_totals])
+                mem_used = f"{perc_str} [grey50]({size_list} GB)[/grey50]"
+                mem_total = f"[grey50]{size_list} GB[/grey50]"
 
         # 2. CPU Usage via top (Linux) - Get raw top summary and parse in Python
         cpu_u_cmd = "top -bn1 | head -n 7"
@@ -335,10 +523,34 @@ def cm_mac_smi(hostname: str):
             cpu_temp_match = re.search(r"(?:Temperature|Die temperature).*?(\d+\.\d+)", res, re.IGNORECASE)
         cpu_temp = cpu_temp_match.group(1) if cpu_temp_match else "N/A"
 
- 
+        # Fallback to smctemp if temperatures are still N/A
+        if temp == "N/A" or cpu_temp == "N/A":
+            if temp == "N/A":
+                success_g, res_g = RemoteExecutor.run_command(hostname, "smctemp -g")
+                if success_g and res_g:
+                    match_g = re.search(r"(\d+\.\d+)", res_g)
+                    if match_g:
+                        temp = match_g.group(1)
+            
+            if cpu_temp == "N/A":
+                success_c, res_c = RemoteExecutor.run_command(hostname, "smctemp -c")
+                if success_c and res_c:
+                    match_c = re.search(r"(\d+\.\d+)", res_c)
+                    if match_c:
+                        cpu_temp = match_c.group(1)
+
+        # Format memory as "perc% (1*sizeGB)" to match other probes
+        try:
+            total_gb = round(mem_total_mib / 1024, 1)
+            perc = round((mem_used_mib / mem_total_mib) * 100, 1) if mem_total_mib > 0 else 0
+            size_val = int(total_gb) if total_gb == int(total_gb) else total_gb
+            mem_used_fmt = f"{perc}% [grey50]({size_val}GB)[/grey50]"
+            mem_total_fmt = f"[grey50]{size_val}GB[/grey50]"
+        except (TypeError, ZeroDivisionError):
+            mem_used_fmt, mem_total_fmt = "N/A", "N/A"
 
         # Format: utilization, temperature, memory_used, memory_total, cpu_util, cpu_temp
-        return f"{util}, {temp}, {mem_used_mib}, {mem_total_mib}, {cpu_util}, {cpu_temp}"
+        return f"{util}, {temp}, {mem_used_fmt}, {mem_total_fmt}, {cpu_util}, {cpu_temp}"
 
     except Exception as e:
         return f"Error retrieving metrics: {e}"
