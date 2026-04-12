@@ -43,14 +43,15 @@ class HostManager:
         """Returns metadata for a specific host identified by label."""
         return self.hosts_data.get(label, {})
 
-    def add_host(self, label: str, hostname: str, active: bool = True, refresh_interval: int = 10, devices: Optional[str] = None):
+    def add_host(self, label: str, hostname: str, active: bool = True, refresh_interval: int = 10, probe_cmd: Optional[str] = None):
         """Adds or updates a host in the configuration using label as the unique key."""
+        default_probe = "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits"
         if label in self.hosts_data:
             # Update existing host, preserving current metrics
             self.hosts_data[label]["hostname"] = hostname
             self.hosts_data[label]["active"] = active
             self.hosts_data[label]["refresh_interval"] = refresh_interval
-            self.hosts_data[label]["devices"] = devices or ""
+            self.hosts_data[label]["probe_cmd"] = probe_cmd or self.hosts_data[label].get("probe_cmd", default_probe)
         else:
             # Add new host
             self.hosts_data[label] = {
@@ -60,7 +61,7 @@ class HostManager:
                 "gpu_temp": "N/A",
                 "mem_usage": "N/A",
                 "refresh_interval": refresh_interval,
-                "devices": devices or ""
+                "probe_cmd": probe_cmd or default_probe
             }
             # Add to order list
             if "cloudmesh" in self.full_cfg and "ai" in self.full_cfg["cloudmesh"]:
@@ -69,12 +70,14 @@ class HostManager:
                     order.append(label)
         self.save()
 
-    def update_metrics(self, label: str, gpu_usage: str, gpu_temp: str, mem_usage: str):
+    def update_metrics(self, label: str, gpu_usage: str, gpu_temp: str, mem_usage: str, last_probe_success=None):
         """Updates the metrics for a host in the configuration file."""
         if label in self.hosts_data:
             self.hosts_data[label]["gpu_usage"] = gpu_usage
             self.hosts_data[label]["gpu_temp"] = gpu_temp
             self.hosts_data[label]["mem_usage"] = mem_usage
+            if last_probe_success is not None:
+                self.hosts_data[label]["last_probe_success"] = last_probe_success
             self.save()
 
     def remove_host(self, label: str):
@@ -88,19 +91,20 @@ class HostManager:
                     order.remove(label)
             self.save()
 
-    def rename_host(self, old_label: str, new_label: str, hostname: str, active: bool = True, refresh_interval: int = 10, devices: Optional[str] = None):
+    def rename_host(self, old_label: str, new_label: str, hostname: str, active: bool = True, refresh_interval: int = 10, probe_cmd: Optional[str] = None):
         """Renames a label while preserving its metrics."""
         if old_label in self.hosts_data:
             data = self.hosts_data.pop(old_label)
             data["hostname"] = hostname
             data["active"] = active
             data["refresh_interval"] = refresh_interval
-            data["devices"] = devices or ""
+            if probe_cmd:
+                data["probe_cmd"] = probe_cmd
             self.hosts_data[new_label] = data
             self.save()
         else:
             # Fallback to add_host if old_label not found
-            self.add_host(new_label, hostname, active, refresh_interval, devices)
+            self.add_host(new_label, hostname, active, refresh_interval, probe_cmd)
 
     def set_active(self, label: str, status: bool):
         """Sets the active status of a host."""
@@ -160,31 +164,34 @@ class RemoteExecutor:
             console.print(f"[bold red]Error launching {tool} on {hostname}:[/bold red] {e}")
 
     @staticmethod
-    def run_command(hostname: str, command: str) -> Optional[str]:
-        """Runs a non-interactive command and returns the output."""
+    def run_command(hostname: str, command: str) -> Tuple[bool, str]:
+        """Runs a non-interactive command and returns (success, output/error)."""
         cmd = ["ssh", hostname, command]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
             if result.returncode == 0:
-                return result.stdout.strip()
-            return None
-        except Exception:
-            return None
+                return True, result.stdout.strip()
+            return False, result.stderr.strip() or f"Command failed with return code {result.returncode}"
+        except Exception as e:
+            return False, str(e)
 
     @staticmethod
     def probe_hardware(hostname: str) -> Dict[str, str]:
         """Probes the remote host for GPU and CPU hardware types."""
         results = {"gpu": "unknown", "cpu": "unknown"}
-        if RemoteExecutor.run_command(hostname, "nvidia-smi -L"):
+        success, _ = RemoteExecutor.run_command(hostname, "nvidia-smi -L")
+        if success:
             results["gpu"] = "nvidia"
-        elif RemoteExecutor.run_command(hostname, "lspci | grep -i vga | grep -i amd") or \
-             RemoteExecutor.run_command(hostname, "rocm-smi"):
-            results["gpu"] = "amd"
         else:
-            results["gpu"] = "none"
+            success_amd, _ = RemoteExecutor.run_command(hostname, "lspci | grep -i vga | grep -i amd")
+            success_rocm, _ = RemoteExecutor.run_command(hostname, "rocm-smi")
+            if success_amd or success_rocm:
+                results["gpu"] = "amd"
+            else:
+                results["gpu"] = "none"
             
-        cpu_info = RemoteExecutor.run_command(hostname, "lscpu")
-        if cpu_info:
+        success_cpu, cpu_info = RemoteExecutor.run_command(hostname, "lscpu")
+        if success_cpu:
             cpu_info_lower = cpu_info.lower()
             if "genuineintel" in cpu_info_lower:
                 results["cpu"] = "intel"

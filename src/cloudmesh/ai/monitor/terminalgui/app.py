@@ -3,6 +3,8 @@ Textual-based TUI for cloudmesh-ai monitoring.
 """
 
 import time
+import logging
+import sys
 from textual.app import App, ComposeResult
 from textual.widgets import (
     Header,
@@ -44,8 +46,53 @@ class DetailScreen(ModalScreen):
     def on_key(self, event: Key) -> None:
         self.app.pop_screen()
 
+class ProbeResultScreen(ModalScreen):
+    """A modal screen that displays the raw output of a probe command."""
+    def __init__(self, output: str):
+        super().__init__()
+        self.output = output
+
+    def compose(self) -> ComposeResult:
+        with Middle():
+            with Center():
+                yield Vertical(
+                    Static("🔍 Probe Result", id="form_title"),
+                    Static(self.output, id="detail_panel"),
+                    Horizontal(
+                        Button("Close", variant="error", id="close_btn"),
+                        id="form_buttons",
+                    ),
+                    id="form_container",
+                )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "close_btn":
+            self.app.pop_screen()
+
 class DashboardScreen(Screen):
     """Screen for the real-time fleet dashboard."""
+
+    def _clean_probe_output(self, output: str) -> str:
+        """Removes SSH warnings and noise from the probe output."""
+        if not output:
+            return ""
+        lines = output.splitlines()
+        cleaned = [
+            line for line in lines 
+            if not line.strip().startswith("**") 
+            and "WARNING" not in line.upper() 
+            and "vulnerable to" not in line.lower()
+        ]
+        return "\n".join(cleaned).strip()
+
+    def _get_full_probe_cmd(self, probe_cmd: str) -> str:
+        """Ensures the probe command starts with nvidia-smi."""
+        if not probe_cmd:
+            return "nvidia-smi"
+        probe_cmd = probe_cmd.strip()
+        if probe_cmd.startswith("nvidia-smi"):
+            return probe_cmd
+        return f"nvidia-smi {probe_cmd}"
 
     BINDINGS = [
         Binding("a", "add_host", "Add Host"),
@@ -140,8 +187,17 @@ class DashboardScreen(Screen):
             mem_usage = info.get("mem_usage", "N/A")
             active_status = "True" if active else "False"
 
+            # Color the interval based on last probe success
+            last_success = info.get("last_probe_success")
+            if last_success is True:
+                interval_str = f"[green]{interval}s[/]"
+            elif last_success is False:
+                interval_str = f"[red]{interval}s[/]"
+            else:
+                interval_str = f"{interval}s"
+
             table.add_row(
-                label, hostname, active_status, f"{interval}s", gpu_usage, gpu_temp, mem_usage
+                label, hostname, active_status, interval_str, gpu_usage, gpu_temp, mem_usage
             )
 
         # Restore cursor position
@@ -164,21 +220,19 @@ class DashboardScreen(Screen):
         if not hostname:
             return
 
-        devices = info.get("devices", "").strip()
+        # Use custom probe command if available, otherwise use default
+        probe_cmd = info.get("probe_cmd", "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits")
         
-        device_flag = ""
-        if devices:
-            # Convert "0 1 2 4" to "0,1,2,4"
-            device_list = ",".join(devices.split())
-            device_flag = f"-i {device_list} "
-
         executor = RemoteExecutor()
-        gpu_data = executor.run_command(
+        full_cmd = self._get_full_probe_cmd(probe_cmd)
+        success, gpu_data = executor.run_command(
             hostname,
-            f"nvidia-smi {device_flag}--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits",
+            full_cmd,
         )
         
-        if gpu_data:
+        gpu_data = self._clean_probe_output(gpu_data)
+        
+        if success and gpu_data:
             lines = gpu_data.splitlines()
             utils, temps, mems = [], [], []
             for line in lines:
@@ -201,7 +255,7 @@ class DashboardScreen(Screen):
             gpu_usage, gpu_temp, mem_usage = "N/A", "N/A", "N/A"
 
         hm = HostManager()
-        hm.update_metrics(label, gpu_usage, gpu_temp, mem_usage)
+        hm.update_metrics(label, gpu_usage, gpu_temp, mem_usage, last_probe_success=success)
         self.app.call_from_thread(self.update_metrics)
 
     def action_toggle_active(self) -> None:
@@ -318,9 +372,10 @@ class AddHostScreen(Screen):
     """Form screen for host configuration."""
 
     BINDINGS = [
-        Binding("s", "save", "Save"),
-        Binding("d", "delete", "Delete"),
+        Binding("p", "probe", "Probe"),
+        Binding("u", "save", "Update"),
         Binding("c", "cancel", "Cancel"),
+        Binding("r", "delete", "Remove"),
     ]
 
     def __init__(self, host_to_edit: str = None):
@@ -335,13 +390,14 @@ class AddHostScreen(Screen):
             Vertical(
                 Horizontal(Label("Hostname:"), Input(id="hostname"), classes="form-row"),
                 Horizontal(Label("Label:"), Input(id="label"), classes="form-row"),
-                Horizontal(Label("Devices:"), Input(placeholder="e.g. 0 1 2 4", id="devices"), classes="form-row"),
+                Horizontal(Label("Probe Cmd:"), Input(id="probe_cmd"), classes="form-row"),
                 Horizontal(Label("Refresh (s):"), Input(value="10", id="refresh_interval"), classes="form-row"),
                 Horizontal(Label("Active:"), Checkbox("Active", value=True, id="active"), classes="form-row"),
                 id="form_fields",
             ),
             Horizontal(
                 Button("Update" if self.host_to_edit else "Save", variant="success", id="save_btn"),
+                Button("Probe", variant="primary", id="probe_btn"),
                 Button("Cancel", variant="error", id="cancel_btn"),
                 Button("Remove", variant="error", id="rem_btn"),
                 id="form_buttons",
@@ -357,7 +413,7 @@ class AddHostScreen(Screen):
             if info:
                 self.query_one("#hostname", Input).value = info.get("hostname", "")
                 self.query_one("#label", Input).value = self.host_to_edit
-                self.query_one("#devices", Input).value = info.get("devices", "")
+                self.query_one("#probe_cmd", Input).value = info.get("probe_cmd", "")
                 self.query_one("#refresh_interval", Input).value = str(info.get("refresh_interval", 10))
                 self.query_one("#active", Checkbox).value = info.get("active", True)
 
@@ -369,12 +425,14 @@ class AddHostScreen(Screen):
             self.action_delete()
         elif event.button.id == "save_btn":
             self.action_save()
+        elif event.button.id == "probe_btn":
+            self.action_probe()
 
     def action_save(self) -> None:
         hm = HostManager()
         hostname = self.query_one("#hostname", Input).value
         label = self.query_one("#label", Input).value
-        devices = self.query_one("#devices", Input).value
+        probe_cmd = self.query_one("#probe_cmd", Input).value
         active = self.query_one("#active", Checkbox).value
         try:
             refresh = int(self.query_one("#refresh_interval", Input).value)
@@ -384,9 +442,9 @@ class AddHostScreen(Screen):
         if label and hostname:
             # Handle renaming: if label changed, use rename_host to preserve metrics
             if self.host_to_edit and label != self.host_to_edit:
-                hm.rename_host(self.host_to_edit, label, hostname, active, refresh, devices)
+                hm.rename_host(self.host_to_edit, label, hostname, active, refresh, probe_cmd)
             else:
-                hm.add_host(label, hostname, active, refresh, devices)
+                hm.add_host(label, hostname, active, refresh, probe_cmd)
             
             self.app.pop_screen()
             self._refresh_parent()
@@ -402,6 +460,57 @@ class AddHostScreen(Screen):
             self.app.pop_screen()
             self._refresh_parent()
 
+    def action_probe(self) -> None:
+        """Executes the current probe command and shows the result in a popup."""
+        hostname = self.query_one("#hostname", Input).value
+        probe_cmd = self.query_one("#probe_cmd", Input).value
+        
+        if not hostname or not probe_cmd:
+            self.app.notify("Hostname and Probe Cmd are required to probe", severity="error")
+            return
+
+        self.app.notify(f"Probing {hostname}...", severity="information")
+        
+        full_cmd = self.app.screen._get_full_probe_cmd(probe_cmd) if isinstance(self.app.screen, DashboardScreen) else (probe_cmd if probe_cmd.startswith("nvidia-smi") else f"nvidia-smi {probe_cmd}")
+        
+        # Immediate debug print to stderr and file to verify the action started
+        debug_start = f"\n[DEBUG] Starting Probe | Host: {hostname} | Cmd: {full_cmd}\n"
+        sys.stderr.write(debug_start)
+        sys.stderr.flush()
+        with open("probe_debug.log", "a") as f:
+            f.write(debug_start)
+
+        # Run the probe command
+        executor = RemoteExecutor()
+        success, output = executor.run_command(hostname, full_cmd)
+        
+        # Clean the output to remove SSH warnings
+        # Since _clean_probe_output is in DashboardScreen, we can access it via app.screen if it's a DashboardScreen
+        # or just implement a static helper. For now, we'll use a simple cleaning logic here or call the method.
+        if isinstance(self.app.screen, DashboardScreen):
+            output = self.app.screen._clean_probe_output(output)
+        else:
+            # Fallback cleaning if not on DashboardScreen
+            if output:
+                output = "\n".join([l for l in output.splitlines() if not l.strip().startswith("**")])
+
+        self.app.notify("Probe command returned", severity="information")
+
+        # Log to the logger, stderr, and file for maximum visibility
+        status = "SUCCESS" if success else "FAILED"
+        # Use the same full_cmd logic for the log message
+        full_cmd = self.app.screen._get_full_probe_cmd(probe_cmd) if isinstance(self.app.screen, DashboardScreen) else (probe_cmd if probe_cmd.startswith("nvidia-smi") else f"nvidia-smi {probe_cmd}")
+        debug_msg = f"\n[DEBUG] Probe {status} | Host: {hostname} | Cmd: '{full_cmd}'\nOutput:\n{output}\n{'-'*60}\n"
+        
+        logging.debug(debug_msg)
+        sys.stderr.write(debug_msg)
+        sys.stderr.flush()
+        with open("probe_debug.log", "a") as f:
+            f.write(debug_msg)
+        
+        self.app.notify(f"Debug output sent to stderr and probe_debug.log", severity="information")
+        self.app.push_screen(ProbeResultScreen(output))
+
     def action_cancel(self) -> None:
         self.app.pop_screen()
 
@@ -413,6 +522,10 @@ class AddHostScreen(Screen):
 
 class MonitorApp(App):
     """Main Textual Application with fixed CSS."""
+
+    BINDINGS = [
+        Binding("escape", "quit", "Quit"),
+    ]
 
     CSS = """
     #title, #form_title {
@@ -431,7 +544,7 @@ class MonitorApp(App):
     }
     #form_container {
         align: center middle;
-        width: 60;
+        width: 100%;
         height: auto;
         border: thick $primary;
         padding: 1 2;
@@ -439,7 +552,7 @@ class MonitorApp(App):
     }
     .form-row { height: auto; margin: 1 0; }
     .form-row Label { width: 15; text-align: right; margin-right: 2; }
-    .form-row Input { width: 30; }
+    .form-row Input { width: 1fr; }
     #form_buttons { align: center middle; height: auto; margin-top: 1; }
     #form_buttons Button { margin: 0 1; }
     #detail_panel {
