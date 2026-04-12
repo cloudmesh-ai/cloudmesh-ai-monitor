@@ -114,15 +114,19 @@ class DashboardScreen(Screen):
         coord = table.cursor_coordinate
         if coord:
             try:
-                row_key, _ = table.coordinate_to_cell_key(coord)
-                selected_label = table.get_row(row_key)[0]
+                # Use row index from coordinate to get the row key
+                row_idx = coord[0]
+                row_keys = list(table.rows.keys())
+                if 0 <= row_idx < len(row_keys):
+                    row_key = row_keys[row_idx]
+                    selected_label = table.get_row(row_key)[0]
             except Exception:
                 pass
 
         # Clear table to ensure deleted/renamed hosts are removed
         table.clear()
 
-        for label, info in hm.hosts_data.items():
+        for label, info in hm.get_hosts_ordered():
             hostname = info.get("hostname", "N/A")
             active = info.get("active", True)
             interval = info.get("refresh_interval", 10)
@@ -207,11 +211,12 @@ class DashboardScreen(Screen):
         
         if coord:
             try:
-                # Get the row key for the current coordinate
-                row_key, _ = table.coordinate_to_cell_key(coord)
-                
-                # Get label from the first column of this row
-                label = table.get_row(row_key)[0]
+                # Use row index from coordinate to get the row key
+                row_idx = coord[0]
+                row_keys = list(table.rows.keys())
+                if 0 <= row_idx < len(row_keys):
+                    row_key = row_keys[row_idx]
+                    label = table.get_row(row_key)[0]
                 
                 # Use HostManager as the source of truth for the current state
                 hm = HostManager()
@@ -236,9 +241,13 @@ class DashboardScreen(Screen):
         coord = table.cursor_coordinate
         if coord:
             try:
-                row_key, _ = table.coordinate_to_cell_key(coord)
-                label = table.get_row(row_key)[0]
-                self.app.push_screen(AddHostScreen(host_to_edit=label))
+                # Use row index from coordinate to get the row key
+                row_idx = coord[0]
+                row_keys = list(table.rows.keys())
+                if 0 <= row_idx < len(row_keys):
+                    row_key = row_keys[row_idx]
+                    label = table.get_row(row_key)[0]
+                    self.app.push_screen(AddHostScreen(host_to_edit=label))
             except Exception:
                 pass
 
@@ -247,28 +256,32 @@ class DashboardScreen(Screen):
         table = self.query_one(DataTable)
         coord = table.cursor_coordinate
         if coord:
-            try:
-                row_key, _ = table.coordinate_to_cell_key(coord)
+            # Use row index from coordinate to get the row key
+            row_idx = coord[0]
+            row_keys = list(table.rows.keys())
+            if 0 <= row_idx < len(row_keys):
+                row_key = row_keys[row_idx]
                 label = table.get_row(row_key)[0]
+                self.notify(f"Moving {label} up")
                 hm = HostManager()
                 hm.move_host(label, "up")
                 self.update_metrics()
-            except Exception:
-                pass
 
     def action_move_down(self) -> None:
         """Moves the selected host down in the list."""
         table = self.query_one(DataTable)
         coord = table.cursor_coordinate
         if coord:
-            try:
-                row_key, _ = table.coordinate_to_cell_key(coord)
+            # Use row index from coordinate to get the row key
+            row_idx = coord[0]
+            row_keys = list(table.rows.keys())
+            if 0 <= row_idx < len(row_keys):
+                row_key = row_keys[row_idx]
                 label = table.get_row(row_key)[0]
+                self.notify(f"Moving {label} down")
                 hm = HostManager()
                 hm.move_host(label, "down")
                 self.update_metrics()
-            except Exception:
-                pass
 
     def action_refresh_host(self) -> None:
         """Refreshes metrics for the selected host."""
@@ -276,9 +289,13 @@ class DashboardScreen(Screen):
         coord = table.cursor_coordinate
         if coord:
             try:
-                row_key, _ = table.coordinate_to_cell_key(coord)
-                label = table.get_row(row_key)[0]
-                self.refresh_host_metrics(label)
+                # Use row index from coordinate to get the row key
+                row_idx = coord[0]
+                row_keys = list(table.rows.keys())
+                if 0 <= row_idx < len(row_keys):
+                    row_key = row_keys[row_idx]
+                    label = table.get_row(row_key)[0]
+                    self.refresh_host_metrics(label)
             except Exception:
                 pass
 

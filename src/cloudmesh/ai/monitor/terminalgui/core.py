@@ -19,12 +19,21 @@ class HostManager:
 
     def _load_full_config(self) -> Dict[str, Any]:
         if not self.config_path.exists():
-            return {"cloudmesh": {"ai": {"hosts": {}}}}
+            return {"cloudmesh": {"ai": {"hosts": {}, "host_order": []}}}
         cfg = load_yaml(self.config_path)
-        return cfg if cfg else {"cloudmesh": {"ai": {"hosts": {}}}}
+        if not cfg:
+            return {"cloudmesh": {"ai": {"hosts": {}, "host_order": []}}}
+        
+        # Ensure structure exists
+        cfg.setdefault("cloudmesh", {}).setdefault("ai", {}).setdefault("hosts", {})
+        cfg["cloudmesh"]["ai"].setdefault("host_order", [])
+        return cfg
 
     def save(self):
         """Persists the current configuration to disk."""
+        # Sync host_order before saving
+        if "cloudmesh" in self.full_cfg and "ai" in self.full_cfg["cloudmesh"]:
+            self.full_cfg["cloudmesh"]["ai"]["host_order"] = list(self.hosts_data.keys())
         dump_yaml(self.config_path, self.full_cfg)
 
     def resolve_host(self, identifier: str) -> Optional[str]:
@@ -94,23 +103,43 @@ class HostManager:
 
     def move_host(self, label: str, direction: str):
         """Moves a host up or down in the configuration order."""
-        if label not in self.hosts_data:
+        # Use host_order as the source of truth for ordering
+        order = self.full_cfg.get("cloudmesh", {}).get("ai", {}).get("host_order", [])
+        if not order:
+            order = list(self.hosts_data.keys())
+        
+        if label not in order:
             return
 
-        items = list(self.hosts_data.items())
-        idx = next(i for i, (l, _) in enumerate(items) if l == label)
+        idx = order.index(label)
 
         if direction == "up" and idx > 0:
-            items[idx], items[idx-1] = items[idx-1], items[idx]
-        elif direction == "down" and idx < len(items) - 1:
-            items[idx], items[idx+1] = items[idx+1], items[idx]
+            order[idx], order[idx-1] = order[idx-1], order[idx]
+        elif direction == "down" and idx < len(order) - 1:
+            order[idx], order[idx+1] = order[idx+1], order[idx]
         else:
             return
 
-        # Update the full config to preserve the new order before saving
-        self.full_cfg["cloudmesh"]["ai"]["hosts"] = dict(items)
-        self.hosts_data = self.full_cfg["cloudmesh"]["ai"]["hosts"]
+        self.full_cfg["cloudmesh"]["ai"]["host_order"] = order
         self.save()
+
+    def get_hosts_ordered(self) -> List[Tuple[str, Dict[str, Any]]]:
+        """Returns hosts in the order specified by host_order."""
+        order = self.full_cfg.get("cloudmesh", {}).get("ai", {}).get("host_order", [])
+        if not order:
+            return list(self.hosts_data.items())
+        
+        ordered_hosts = []
+        for label in order:
+            if label in self.hosts_data:
+                ordered_hosts.append((label, self.hosts_data[label]))
+        
+        # Add any hosts that might be in hosts_data but not in host_order
+        for label, data in self.hosts_data.items():
+            if label not in order:
+                ordered_hosts.append((label, data))
+                
+        return ordered_hosts
 
 class RemoteExecutor:
     """Handles execution of commands on remote hosts via SSH."""
