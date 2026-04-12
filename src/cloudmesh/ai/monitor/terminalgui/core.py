@@ -31,9 +31,6 @@ class HostManager:
 
     def save(self):
         """Persists the current configuration to disk."""
-        # Sync host_order before saving
-        if "cloudmesh" in self.full_cfg and "ai" in self.full_cfg["cloudmesh"]:
-            self.full_cfg["cloudmesh"]["ai"]["host_order"] = list(self.hosts_data.keys())
         dump_yaml(self.config_path, self.full_cfg)
 
     def resolve_host(self, identifier: str) -> Optional[str]:
@@ -65,6 +62,11 @@ class HostManager:
                 "refresh_interval": refresh_interval,
                 "devices": devices or ""
             }
+            # Add to order list
+            if "cloudmesh" in self.full_cfg and "ai" in self.full_cfg["cloudmesh"]:
+                order = self.full_cfg["cloudmesh"]["ai"].setdefault("host_order", [])
+                if label not in order:
+                    order.append(label)
         self.save()
 
     def update_metrics(self, label: str, gpu_usage: str, gpu_temp: str, mem_usage: str):
@@ -79,6 +81,11 @@ class HostManager:
         """Removes a host from the configuration."""
         if label in self.hosts_data:
             del self.hosts_data[label]
+            # Remove from order list
+            if "cloudmesh" in self.full_cfg and "ai" in self.full_cfg["cloudmesh"]:
+                order = self.full_cfg["cloudmesh"]["ai"].get("host_order", [])
+                if label in order:
+                    order.remove(label)
             self.save()
 
     def rename_host(self, old_label: str, new_label: str, hostname: str, active: bool = True, refresh_interval: int = 10, devices: Optional[str] = None):
