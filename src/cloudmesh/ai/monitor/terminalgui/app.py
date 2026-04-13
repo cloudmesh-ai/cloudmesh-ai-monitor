@@ -94,11 +94,67 @@ class DashboardScreen(Screen):
             return probe_cmd
         return f"nvidia-smi {probe_cmd}"
 
-    def _format_metric(self, value: str) -> str:
-        """Returns an empty string if the value is 'N/A', otherwise returns the value."""
-        if not value or "N/A" in value:
+    def _render_metric(self, value: Any, metric_type: str) -> str:
+        """Renders raw metrics (now lists) into user-friendly display strings."""
+        if not value or value == "N/A":
             return ""
-        return value
+
+        # Handle case where value might still be a string (legacy or error)
+        if isinstance(value, str):
+            if value == "N/A": return ""
+            # Convert space-separated string to list for consistent processing
+            if metric_type == "mem":
+                # Legacy "perc/total" string
+                parts = value.split()
+                mem_list = []
+                for p in parts:
+                    if "/" in p:
+                        mem_list.append(p.split("/", 1))
+                    else:
+                        mem_list.append([p, "N/A"])
+                value = mem_list
+            else:
+                value = value.split()
+
+        if not value:
+            return ""
+
+        if metric_type == "temp":
+            vals = " ".join([str(v) for v in value if v != "N/A"])
+            return f"{vals}°C" if vals else ""
+        elif metric_type == "usage":
+            vals = " ".join([str(v) for v in value if v != "N/A"])
+            return f"{vals}%" if vals else ""
+        elif metric_type == "mem":
+            # value is expected to be a list of [perc, total]
+            percs = []
+            totals = []
+            for item in value:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    p, t = item[0], item[1]
+                    if p != "N/A": percs.append(f"{p}%")
+                    if t != "N/A": totals.append(str(t))
+                elif item != "N/A":
+                    percs.append(str(item))
+            
+            perc_str = " ".join(percs)
+            if not perc_str and not totals: return ""
+            
+            if not totals:
+                return perc_str
+            
+            # Determine total memory display
+            unique_totals = list(set(totals))
+            if len(unique_totals) == 1:
+                size = unique_totals[0]
+                count = len(totals)
+                total_str = f"{count}*{size}GB" if count > 1 else f"{size}GB"
+            else:
+                total_str = f"{', '.join(totals)} GB"
+            
+            return f"{perc_str} [grey50]({total_str})[/grey50]"
+        
+        return str(value)
 
     BINDINGS = [
         Binding("a", "add_host", "Add Host"),
@@ -211,11 +267,11 @@ class DashboardScreen(Screen):
                 hostname, 
                 active_status, 
                 interval_str, 
-                self._format_metric(gpu_usage), 
-                self._format_metric(gpu_temp), 
-                self._format_metric(mem_usage), 
-                self._format_metric(cpu_usage), 
-                self._format_metric(cpu_temp)
+                self._render_metric(gpu_usage, "usage"), 
+                self._render_metric(gpu_temp, "temp"), 
+                self._render_metric(mem_usage, "mem"), 
+                self._render_metric(cpu_usage, "usage"), 
+                self._render_metric(cpu_temp, "temp"),
             )
 
         # Restore cursor position
@@ -245,92 +301,80 @@ class DashboardScreen(Screen):
         if probe_cmd.startswith("cm-mac-smi"):
             parts = probe_cmd.split()
             target_host = parts[1] if len(parts) > 1 else hostname
-            gpu_data = cm_mac_smi(target_host)
-            success = not gpu_data.startswith("Error")
+            res = cm_mac_smi(target_host)
+            if isinstance(res, dict):
+                gpu_usage, gpu_temp, mem_usage, cpu_usage, cpu_temp = res["gpu_usage"], res["gpu_temp"], res["mem_usage"], res["cpu_usage"], res["cpu_temp"]
+                success = True
+            else:
+                success = False
+                gpu_usage, gpu_temp, mem_usage, cpu_usage, cpu_temp = "N/A", "N/A", "N/A", "N/A", "N/A"
         elif probe_cmd.startswith("cm-spark-smi"):
             parts = probe_cmd.split()
             target_host = parts[1] if len(parts) > 1 else hostname
-            gpu_data = cm_spark_smi(target_host)
-            success = not gpu_data.startswith("Error")
+            res = cm_spark_smi(target_host)
+            if isinstance(res, dict):
+                gpu_usage, gpu_temp, mem_usage, cpu_usage, cpu_temp = res["gpu_usage"], res["gpu_temp"], res["mem_usage"], res["cpu_usage"], res["cpu_temp"]
+                success = True
+            else:
+                success = False
+                gpu_usage, gpu_temp, mem_usage, cpu_usage, cpu_temp = "N/A", "N/A", "N/A", "N/A", "N/A"
         elif probe_cmd.startswith("cm-dgx-smi"):
             parts = probe_cmd.split()
-            # Format: cm-dgx-smi [target_host] [devices]
             if len(parts) > 2:
-                target_host = parts[1]
-                devices = parts[2]
+                target_host, devices = parts[1], parts[2]
             elif len(parts) == 2:
-                # Could be 'cm-dgx-smi target_host' or 'cm-dgx-smi devices'
-                # If the second part contains a comma, it's likely devices
                 if "," in parts[1]:
-                    target_host = hostname
-                    devices = parts[1]
+                    target_host, devices = hostname, parts[1]
                 else:
-                    target_host = parts[1]
-                    devices = "0"
+                    target_host, devices = parts[1], "0"
             else:
-                target_host = hostname
-                devices = "0"
+                target_host, devices = hostname, "0"
             
-            gpu_data = cm_dgx_smi(target_host, devices)
-            success = not gpu_data.startswith("Error")
+            res = cm_dgx_smi(target_host, devices)
+            if isinstance(res, dict):
+                gpu_usage, gpu_temp, mem_usage, cpu_usage, cpu_temp = res["gpu_usage"], res["gpu_temp"], res["mem_usage"], res["cpu_usage"], res["cpu_temp"]
+                success = True
+            else:
+                success = False
+                gpu_usage, gpu_temp, mem_usage, cpu_usage, cpu_temp = "N/A", "N/A", "N/A", "N/A", "N/A"
         else:
             executor = RemoteExecutor()
             full_cmd = self._get_full_probe_cmd(probe_cmd)
-            success, gpu_data = executor.run_command(
-                hostname,
-                full_cmd,
-            )
+            success, gpu_data = executor.run_command(hostname, full_cmd)
             gpu_data = self._clean_probe_output(gpu_data)
-        
-        if success and gpu_data:
-            lines = gpu_data.splitlines()
-            utils, temps, mems, cpu_utils, cpu_temps = [], [], [], [], []
-            # Check if this is a special cm- probe that already provides formatted memory
-            is_special_probe = any(probe_cmd.startswith(prefix) for prefix in ["cm-mac-smi", "cm-spark-smi", "cm-dgx-smi"])
-
-            for line in lines:
-                parts = line.split(",")
-                if len(parts) >= 4:
-                    p = [x.strip() for x in parts]
-                    utils.append(f"{p[0]}%")
-                    temps.append(f"{p[1]}°C")
-                    
-                    if is_special_probe:
-                        # Special probes already return formatted memory in p[2] (e.g., "0.7%/24GB")
-                        mems.append(p[2])
-                    else:
+            
+            if success and gpu_data:
+                utils, temps, mem_list, cpu_utils, cpu_temps = [], [], [], [], []
+                for line in gpu_data.splitlines():
+                    parts = [x.strip() for x in line.split(",")]
+                    if len(parts) >= 4:
+                        utils.append(float(parts[0]) if parts[0].replace('.','',1).isdigit() else "N/A")
+                        temps.append(float(parts[1]) if parts[1].replace('.','',1).isdigit() else "N/A")
                         try:
-                            used_gb = float(p[2]) / 1024
-                            total_gb = float(p[3]) / 1024
-                            mems.append(f"{used_gb:.2f}/{total_gb:.2f}")
+                            used_gb = float(parts[2]) / 1024
+                            total_gb = float(parts[3]) / 1024
+                            mem_list.append([round((used_gb/total_gb)*100, 1) if total_gb > 0 else 0, round(total_gb, 1)])
                         except (ValueError, IndexError):
-                            mems.append(f"{p[2]}/{p[3]}")
-                    
-                    if len(parts) >= 6:
-                        cpu_utils.append(f"{p[4]}%")
-                        cpu_temps.append(f"{p[5]}°C")
+                            mem_list.append(["N/A", "N/A"])
+                        if len(parts) >= 6:
+                            cpu_utils.append(float(parts[4]) if parts[4].replace('.','',1).isdigit() else "N/A")
+                            cpu_temps.append(float(parts[5]) if parts[5].replace('.','',1).isdigit() else "N/A")
+                
+                gpu_usage, gpu_temp, mem_usage = utils, temps, mem_list
+                cpu_usage, cpu_temp = cpu_utils, cpu_temps
+            else:
+                gpu_usage, gpu_temp, mem_usage, cpu_usage, cpu_temp = "N/A", "N/A", "N/A", "N/A", "N/A"
  
-            gpu_usage = " ".join(utils) or "N/A"
-            gpu_temp = " ".join(temps) or "N/A"
-            mem_usage = " ".join(mems) or "N/A"
-            cpu_usage = " ".join(cpu_utils) or "N/A"
-            cpu_temp = " ".join(cpu_temps) or "N/A"
-        else:
-            gpu_usage, gpu_temp, mem_usage, cpu_usage, cpu_temp = "N/A", "N/A", "N/A", "N/A", "N/A"
- 
-        # For non-Mac/non-Spark/non-DGX hosts, we need to fetch CPU metrics separately as nvidia-smi doesn't provide them
-        if not probe_cmd.startswith("cm-mac-smi") and not probe_cmd.startswith("cm-spark-smi") and not probe_cmd.startswith("cm-dgx-smi") and success:
+        if not any(probe_cmd.startswith(p) for p in ["cm-mac-smi", "cm-spark-smi", "cm-dgx-smi"]) and success:
             executor = RemoteExecutor()
-            # CPU Usage: 100% - idle
-            cpu_usage_cmd = "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1\"%\"}'"
-            # CPU Temp: try sensors, then fallback to sysfs
-            cpu_temp_cmd = "sensors | grep 'Package id 0' | awk '{print $4}' || cat /sys/class/thermal/thermal_zone0/temp | awk '{print $1/1000\"°C\"}'"
+            cpu_usage_cmd = "top -bn1 | grep 'Cpu(s)' | sed 's/.*, *\\([0-9.]*\\)%* id.*/\\1/' | awk '{print 100 - $1}'"
+            cpu_temp_cmd = "sensors | grep 'Package id 0' | awk '{print $4}' || cat /sys/class/thermal/thermal_zone0/temp | awk '{print $1/1000}'"
             
-            cpu_u_success, cpu_u_val = executor.run_command(hostname, cpu_usage_cmd)
-            cpu_t_success, cpu_t_val = executor.run_command(hostname, cpu_temp_cmd)
+            u_success, u_val = executor.run_command(hostname, cpu_usage_cmd)
+            t_success, t_val = executor.run_command(hostname, cpu_temp_cmd)
             
-            if cpu_u_success: cpu_usage = cpu_u_val
-            if cpu_t_success: cpu_temp = cpu_t_val
+            if u_success: cpu_usage = [float(u_val)] if u_val.replace('.','',1).isdigit() else ["N/A"]
+            if t_success: cpu_temp = [float(t_val)] if t_val.replace('.','',1).isdigit() else ["N/A"]
 
         hm = HostManager()
         hm.update_metrics(label, gpu_usage, gpu_temp, mem_usage, cpu_usage=cpu_usage, cpu_temp=cpu_temp, last_probe_success=success)
@@ -442,9 +486,124 @@ class DashboardScreen(Screen):
     def action_add_host(self) -> None:
         self.app.push_screen(AddHostScreen())
 
+
     def action_quit(self) -> None:
         self.app.exit()
 
+
+class EditHostModal(ModalScreen):
+    """A modal window for editing host configuration."""
+    def __init__(self, host_to_edit: str):
+        super().__init__()
+        self.host_to_edit = host_to_edit
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Static("📝 Edit Host", id="form_title"),
+            Vertical(
+                Horizontal(Label("Hostname:"), Input(id="hostname"), classes="form-row"),
+                Horizontal(Label("Label:"), Input(id="label"), classes="form-row"),
+                Horizontal(Label("Probe Cmd:"), Input(id="probe_cmd"), classes="form-row"),
+                Horizontal(Label("Refresh (s):"), Input(id="refresh_interval"), classes="form-row"),
+                Horizontal(Label("Active:"), Checkbox("Active", id="active"), classes="form-row"),
+                id="form_fields",
+            ),
+            Horizontal(
+                Button("Update", variant="success", id="save_btn"),
+                Button("Probe", variant="primary", id="probe_btn"),
+                Button("Cancel", variant="error", id="cancel_btn"),
+                Button("Remove", variant="error", id="rem_btn"),
+                id="form_buttons",
+            ),
+            id="form_container",
+        )
+
+    def on_mount(self) -> None:
+        hm = HostManager()
+        info = hm.get_host_info(self.host_to_edit)
+        if info:
+            self.query_one("#hostname", Input).value = info.get("hostname", "")
+            self.query_one("#label", Input).value = self.host_to_edit
+            self.query_one("#probe_cmd", Input).value = info.get("probe_cmd", "")
+            self.query_one("#refresh_interval", Input).value = str(info.get("refresh_interval", 10))
+            self.query_one("#active", Checkbox).value = info.get("active", True)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel_btn":
+            self.app.pop_screen()
+        elif event.button.id == "rem_btn":
+            self.action_delete()
+        elif event.button.id == "save_btn":
+            self.action_save()
+        elif event.button.id == "probe_btn":
+            self.action_probe()
+
+    def action_save(self) -> None:
+        hm = HostManager()
+        hostname = self.query_one("#hostname", Input).value
+        label = self.query_one("#label", Input).value
+        probe_cmd = self.query_one("#probe_cmd", Input).value
+        active = self.query_one("#active", Checkbox).value
+        try:
+            refresh = int(self.query_one("#refresh_interval", Input).value)
+        except ValueError:
+            refresh = 10
+        
+        if label and hostname:
+            if label != self.host_to_edit:
+                hm.rename_host(self.host_to_edit, label, hostname, active, refresh, probe_cmd)
+            else:
+                hm.add_host(label, hostname, active, refresh, probe_cmd)
+            self.app.pop_screen()
+            self._refresh_parent()
+
+    def action_delete(self) -> None:
+        hm = HostManager()
+        label = self.query_one("#label", Input).value
+        if label:
+            hm.remove_host(label)
+            self.app.pop_screen()
+            self._refresh_parent()
+
+    def action_probe(self) -> None:
+        hostname = self.query_one("#hostname", Input).value
+        probe_cmd = self.query_one("#probe_cmd", Input).value
+        if not hostname or not probe_cmd:
+            self.app.notify("Hostname and Probe Cmd are required", severity="error")
+            return
+        
+        self.app.notify(f"Probing {hostname}...", severity="information")
+        stripped_cmd = probe_cmd.strip()
+        
+        if stripped_cmd.startswith("cm-mac-smi"):
+            parts = stripped_cmd.split()
+            target_host = parts[1] if len(parts) > 1 else hostname
+            output = cm_mac_smi(target_host)
+            success = not output.startswith("Error")
+        elif stripped_cmd.startswith("cm-spark-smi"):
+            parts = stripped_cmd.split()
+            target_host = parts[1] if len(parts) > 1 else hostname
+            output = cm_spark_smi(target_host)
+            success = not output.startswith("Error")
+        elif stripped_cmd.startswith("cm-dgx-smi"):
+            parts = stripped_cmd.split()
+            target_host = parts[1] if len(parts) > 1 else hostname
+            devices = parts[2] if len(parts) > 2 else "0"
+            output = cm_dgx_smi(target_host, devices)
+            success = not output.startswith("Error")
+        else:
+            executor = RemoteExecutor()
+            full_cmd = (probe_cmd if probe_cmd.startswith("nvidia-smi") else f"nvidia-smi {probe_cmd}")
+            success, output = executor.run_command(hostname, full_cmd)
+
+        if isinstance(self.app.screen, DashboardScreen):
+            output = self.app.screen._clean_probe_output(output)
+        
+        self.app.push_screen(ProbeResultScreen(output))
+
+    def _refresh_parent(self):
+        if isinstance(self.app.screen, DashboardScreen):
+            self.app.screen.update_metrics()
 
 class AddHostScreen(Screen):
     """Form screen for host configuration."""

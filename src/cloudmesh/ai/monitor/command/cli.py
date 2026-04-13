@@ -10,6 +10,7 @@ from rich.panel import Panel
 
 from cloudmesh.ai.monitor.terminalgui.core import HostManager, RemoteExecutor
 from cloudmesh.ai.monitor.terminalgui.app import CloudmeshAIMonitorApp
+from cloudmesh.ai.monitor.llm_checker import LLMChecker
 
 console = Console()
 
@@ -194,6 +195,36 @@ def create_cli():
         """Generate a link to a Grafana snapshot for the current state."""
         snapshot_url = f"{url}/d/{dashboard_id}?orgId=1&from=now-1h&to=now"
         console.print(Panel(f"Grafana Dashboard Link:\n[bold cyan]{snapshot_url}[/bold cyan]", title="Grafana Integration", border_style="blue"))
+
+    @main.command(name="llm-check")
+    @click.option("--host", default="dgx", help="Target host.")
+    @click.option("--port", default=8001, help="Target port.")
+    @click.option("--key-path", default="~/gemma/server_master_key.txt", help="Path to API key file.")
+    @click.option("--json", is_flag=True, help="Output results in JSON format.")
+    def llm_check_cmd(host, port, key_path, json):
+        """Check LLM connectivity, health, and performance metrics."""
+        checker = LLMChecker(host, port, key_path)
+        
+        proc_ok, details = checker.check_process()
+        if not proc_ok:
+            checker.print_summary()
+            return
+        
+        checker.check_gpu_status()
+        checker.check_tunnel()
+        
+        server_ok, model_id = checker.probe_server()
+        if server_ok:
+            checker.probe_chat(model_id)
+            checker.fetch_diagnostics()
+            checker.log("LLM Server is UP and responding.", "OK")
+        else:
+            checker.log("LLM Server is DOWN or unreachable.", "FAIL")
+
+        if json:
+            print(checker.to_json())
+        else:
+            checker.print_summary()
 
     return wrapper
 

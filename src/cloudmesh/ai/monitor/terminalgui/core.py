@@ -73,7 +73,7 @@ class HostManager:
                     order.append(label)
         self.save()
 
-    def update_metrics(self, label: str, gpu_usage: str, gpu_temp: str, mem_usage: str, cpu_usage: str = "N/A", cpu_temp: str = "N/A", last_probe_success=None):
+    def update_metrics(self, label: str, gpu_usage: Any, gpu_temp: Any, mem_usage: Any, cpu_usage: Any = "N/A", cpu_temp: Any = "N/A", last_probe_success=None):
         """Updates the metrics for a host in the configuration file."""
         if label in self.hosts_data:
             self.hosts_data[label]["gpu_usage"] = gpu_usage
@@ -189,7 +189,7 @@ def cm_dgx_smi(hostname: str, devices: str = "0"):
                         t_val = float(total)
                         perc = round((u_val / t_val) * 100, 1) if t_val > 0 else 0
                         gb = round(t_val / 1024, 1)
-                        percs.append(f"{perc}%")
+                        percs.append(f"{perc}/{gb}")
                         totals.append(gb)
                     except ValueError:
                         percs.append("N/A")
@@ -198,33 +198,18 @@ def cm_dgx_smi(hostname: str, devices: str = "0"):
         if not utils:
             return f"Error: No matching GPUs found for devices {devices} on {hostname}"
             
-        gpu_util = " ".join(utils)
-        gpu_temp = " ".join(temps)
-        
-        # Memory formatting: a% b% c% d% (count*sizeGB) or a% b% c% d% (s1, s2, ... GB)
-        perc_str = " ".join(percs)
-        valid_totals = [t for t in totals if t is not None]
-        
-        if not valid_totals:
-            gpu_mem_used = "N/A"
-            gpu_mem_total = "N/A"
-        elif len(set(valid_totals)) == 1:
-            # All same size
-            size = valid_totals[0]
-            count = len(valid_totals)
-            # Use int if it's a whole number for cleaner look (e.g. 80GB instead of 80.0GB)
-            size_val = int(size) if size == int(size) else size
-            if count == 1:
-                gpu_mem_used = f"{perc_str} [grey50]({size_val}GB)[/grey50]"
-                gpu_mem_total = f"[grey50]{size_val}GB[/grey50]"
+        # Memory: store as list of [perc, total]
+        mem_list = []
+        for p, t in zip(percs, totals):
+            if p != "N/A" and t is not None:
+                try:
+                    # percs currently contains "perc/gb" strings from lines 192
+                    p_val = float(p.split('/')[0])
+                    mem_list.append([p_val, t])
+                except (ValueError, IndexError):
+                    mem_list.append(["N/A", "N/A"])
             else:
-                gpu_mem_used = f"{perc_str} [grey50]({count}*{size_val}GB)[/grey50]"
-                gpu_mem_total = f"[grey50]{count}*{size_val}GB[/grey50]"
-        else:
-            # Different sizes
-            size_list = ", ".join([str(int(t) if t == int(t) else t) for t in valid_totals])
-            gpu_mem_used = f"{perc_str} [grey50]({size_list} GB)[/grey50]"
-            gpu_mem_total = f"[grey50]{size_list} GB[/grey50]"
+                mem_list.append(["N/A", "N/A"])
 
         # 2. CPU Usage via top
         cpu_u_cmd = "top -bn1 | head -n 7"
@@ -304,7 +289,13 @@ def cm_dgx_smi(hostname: str, devices: str = "0"):
                         cpu_temp = str(round(int(val) / 1000.0, 2))
                         break
 
-        return f"{gpu_util}, {gpu_temp}, {gpu_mem_used}, {gpu_mem_total}, {cpu_util}, {cpu_temp}"
+        return {
+            "gpu_usage": [float(x) for x in utils],
+            "gpu_temp": [float(x) for x in temps],
+            "mem_usage": mem_list,
+            "cpu_usage": [float(cpu_util)] if cpu_util != "N/A" else ["N/A"],
+            "cpu_temp": [float(cpu_temp)] if cpu_temp != "N/A" else ["N/A"]
+        }
 
     except Exception as e:
         return f"Error retrieving DGX metrics: {e}"
@@ -337,7 +328,7 @@ def cm_spark_smi(hostname: str):
                     t_val = float(total)
                     perc = round((u_val / t_val) * 100, 1) if t_val > 0 else 0
                     gb = round(t_val / 1024, 1)
-                    percs.append(f"{perc}%")
+                    percs.append(f"{perc}/{gb}")
                     totals.append(gb)
                 except ValueError:
                     percs.append("N/A")
@@ -346,13 +337,13 @@ def cm_spark_smi(hostname: str):
         if not utils:
             return f"Error: nvidia-smi failed on {hostname}"
 
-        gpu_util = " ".join(utils)
-        gpu_temp = " ".join(temps)
-
-        # Memory formatting logic
-        valid_totals = [t for t in totals if t is not None]
-        if not valid_totals:
-            # Fallback to system memory if no GPU memory found
+        # Memory: store as list of [perc, total]
+        mem_list = []
+        # Check if we actually have valid GPU memory data
+        has_valid_gpu_mem = any(t is not None for t in totals)
+        
+        if not has_valid_gpu_mem:
+            # Fallback to system memory if no valid GPU memory found
             success_mem, mem_res = RemoteExecutor.run_command(hostname, "cat /proc/meminfo")
             if success_mem and mem_res:
                 mem_data = {}
@@ -366,31 +357,23 @@ def cm_spark_smi(hostname: str):
                 avail_kb = mem_data.get("MemAvailable", mem_data.get("MemFree", 0))
                 if total_kb > 0:
                     total_gb = round(total_kb / (1024*1024), 1)
-                    used_gb = total_gb - round(avail_kb / (1024*1024), 1)
-                    perc = round((used_gb / total_gb) * 100, 1) if total_gb > 0 else 0
-                    size_val = int(total_gb) if total_gb == int(total_gb) else total_gb
-                    mem_used = f"{perc}% [grey50]({size_val}GB)[/grey50]"
-                    mem_total = f"[grey50]{size_val}GB[/grey50]"
+                    used_kb = total_kb - avail_kb
+                    perc = round((used_kb / total_kb) * 100, 1) if total_kb > 0 else 0
+                    mem_list.append([perc, total_gb])
                 else:
-                    mem_used, mem_total = "N/A", "N/A"
+                    mem_list.append(["N/A", "N/A"])
             else:
-                mem_used, mem_total = "N/A", "N/A"
+                mem_list.append(["N/A", "N/A"])
         else:
-            perc_str = " ".join(percs)
-            if len(set(valid_totals)) == 1:
-                size = valid_totals[0]
-                count = len(valid_totals)
-                size_val = int(size) if size == int(size) else size
-                if count == 1:
-                    mem_used = f"{perc_str} [grey50]({size_val}GB)[/grey50]"
-                    mem_total = f"[grey50]{size_val}GB[/grey50]"
+            for p, t in zip(percs, totals):
+                if p != "N/A" and t is not None:
+                    try:
+                        p_val = float(p.split('/')[0])
+                        mem_list.append([p_val, t])
+                    except (ValueError, IndexError):
+                        mem_list.append(["N/A", "N/A"])
                 else:
-                    mem_used = f"{perc_str} [grey50]({count}*{size_val}GB)[/grey50]"
-                    mem_total = f"[grey50]{count}*{size_val}GB[/grey50]"
-            else:
-                size_list = ", ".join([str(int(t) if t == int(t) else t) for t in valid_totals])
-                mem_used = f"{perc_str} [grey50]({size_list} GB)[/grey50]"
-                mem_total = f"[grey50]{size_list} GB[/grey50]"
+                    mem_list.append(["N/A", "N/A"])
 
         # 2. CPU Usage via top (Linux) - Get raw top summary and parse in Python
         cpu_u_cmd = "top -bn1 | head -n 7"
@@ -430,8 +413,13 @@ def cm_spark_smi(hostname: str):
                 if first_temp.isdigit():
                     cpu_temp = str(round(int(first_temp) / 1000.0, 2))
 
-        # The app.py expects: util, temp, mem_used, mem_total, cpu_util, cpu_temp
-        return f"{gpu_util}, {gpu_temp}, {mem_used}, {mem_total}, {cpu_util}, {cpu_temp}"
+        return {
+            "gpu_usage": [float(x) for x in utils],
+            "gpu_temp": [float(x) for x in temps],
+            "mem_usage": mem_list,
+            "cpu_usage": [float(cpu_util)] if cpu_util != "N/A" else ["N/A"],
+            "cpu_temp": [float(cpu_temp)] if cpu_temp != "N/A" else ["N/A"]
+        }
 
     except Exception as e:
         return f"Error retrieving spark metrics: {e}"
@@ -539,18 +527,21 @@ def cm_mac_smi(hostname: str):
                     if match_c:
                         cpu_temp = match_c.group(1)
 
-        # Format memory as "perc% (1*sizeGB)" to match other probes
+        # Format memory as list of [perc, total]
         try:
             total_gb = round(mem_total_mib / 1024, 1)
             perc = round((mem_used_mib / mem_total_mib) * 100, 1) if mem_total_mib > 0 else 0
-            size_val = int(total_gb) if total_gb == int(total_gb) else total_gb
-            mem_used_fmt = f"{perc}% [grey50]({size_val}GB)[/grey50]"
-            mem_total_fmt = f"[grey50]{size_val}GB[/grey50]"
+            mem_list = [[perc, total_gb]]
         except (TypeError, ZeroDivisionError):
-            mem_used_fmt, mem_total_fmt = "N/A", "N/A"
+            mem_list = [["N/A", "N/A"]]
 
-        # Format: utilization, temperature, memory_used, memory_total, cpu_util, cpu_temp
-        return f"{util}, {temp}, {mem_used_fmt}, {mem_total_fmt}, {cpu_util}, {cpu_temp}"
+        return {
+            "gpu_usage": [float(util)],
+            "gpu_temp": [float(temp)] if temp != "N/A" else ["N/A"],
+            "mem_usage": mem_list,
+            "cpu_usage": [float(cpu_util)],
+            "cpu_temp": [float(cpu_temp)] if cpu_temp != "N/A" else ["N/A"]
+        }
 
     except Exception as e:
         return f"Error retrieving metrics: {e}"
