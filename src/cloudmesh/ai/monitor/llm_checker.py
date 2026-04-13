@@ -152,21 +152,64 @@ class LLMChecker:
     def probe_chat(self, model_id):
         base_url = f"http://localhost:{self.port}/v1"
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        payload = {"model": model_id, "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 5}
+        payload = {
+            "model": model_id, 
+            "messages": [{"role": "user", "content": "Hi, please respond with a short sentence."}], 
+            "max_tokens": 20,
+            "stream": True
+        }
         
-        start = time.time()
+        start_time = time.time()
+        first_token_time = None
+        token_count = 0
+        
         try:
-            resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=10)
-            latency = (time.time() - start) * 1000
-            if resp.status_code == 200:
-                self.log(f"Chat probe successful in {latency:.1f}ms", "OK")
-                self.summary_results.append(("Chat Probe", True, f"{latency:.1f}ms"))
+            resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=10, stream=True)
+            if resp.status_code != 200:
+                self.log(f"Chat probe failed with status {resp.status_code}", "FAIL")
+                self.summary_results.append(("Chat Probe", False, f"HTTP {resp.status_code}"))
+                return False
+
+            for line in resp.iter_lines():
+                if line:
+                    line_text = line.decode('utf-8')
+                    if line_text.startswith("data: "):
+                        data_str = line_text[6:]
+                        if data_str == "[DONE]":
+                            break
+                        
+                        # First token received
+                        if first_token_time is None:
+                            first_token_time = time.time()
+                        
+                        try:
+                            data_json = json.loads(data_str)
+                            content = data_json['choices'][0]['delta'].get('content', '')
+                            if content:
+                                token_count += 1
+                        except json.JSONDecodeError:
+                            pass
+
+            end_time = time.time()
+            
+            if first_token_time:
+                ttft = (first_token_time - start_time) * 1000
+                total_duration = end_time - start_time
+                tps = token_count / total_duration if total_duration > 0 else 0
+                
+                self.log(f"Chat probe successful: TTFT={ttft:.1f}ms, TPS={tps:.2f} tok/s", "OK")
+                self.summary_results.append(("Chat TTFT", True, f"{ttft:.1f}ms"))
+                self.summary_results.append(("Chat TPS", True, f"{tps:.2f} tok/s"))
                 return True
+            else:
+                self.log("Chat probe failed: No tokens received", "FAIL")
+                self.summary_results.append(("Chat Probe", False, "No tokens"))
+                return False
+
         except Exception as e:
             self.log(f"Chat probe failed: {e}", "FAIL")
-        
-        self.summary_results.append(("Chat Probe", False, "Failed"))
-        return False
+            self.summary_results.append(("Chat Probe", False, "Error"))
+            return False
 
     def fetch_diagnostics(self):
         base_url = f"http://localhost:{self.port}"

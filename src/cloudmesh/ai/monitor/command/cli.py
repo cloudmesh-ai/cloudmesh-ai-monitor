@@ -196,6 +196,166 @@ def create_cli():
         snapshot_url = f"{url}/d/{dashboard_id}?orgId=1&from=now-1h&to=now"
         console.print(Panel(f"Grafana Dashboard Link:\n[bold cyan]{snapshot_url}[/bold cyan]", title="Grafana Integration", border_style="blue"))
 
+    @main.group(name="health")
+    def health_group():
+        """Check the health status of various system components."""
+        pass
+
+    @click.group(name="status")
+    def status_group():
+        """Get the current status of a specific component."""
+        pass
+    
+    health_group.add_command(status_group)
+
+    @status_group.command(name="disk")
+    @click.argument("identifier")
+    @click.option("--password", help="Sudo password for smartctl.")
+    @click.option("--usage", is_flag=True, help="Include columns for total and used disk capacity.")
+    def disk_health_cmd(identifier, password, usage):
+        """Check disk health status and optional usage using smartctl scan."""
+        hm = HostManager()
+        hostname = hm.resolve_host(identifier)
+        if not hostname:
+            console.print(f"[bold red]Error: Could not resolve host '{identifier}'[/bold red]")
+            return
+
+        if not password:
+            password = click.prompt(f"Sudo password for {hostname}", hide_input=True)
+            if not password: password = None
+
+        executor = RemoteExecutor()
+        console.print(f"[blue]Scanning disks on {hostname}...[/blue]")
+
+        # 1. Get device list using lsblk (more reliable than smartctl --scan)
+        lsblk_cmd = "lsblk -dn -o NAME"
+        success, disks_out = executor.run_command(hostname, lsblk_cmd)
+        
+        if not success or not disks_out:
+            console.print("[bold red]Error: Could not retrieve disk list from lsblk.[/bold red]")
+            return
+
+        disks = [d.strip() for d in disks_out.split('\n') if d.strip() and not d.strip().startswith('loop')]
+
+        table = Table(title=f"Disk Health Status: {hostname}")
+        table.add_column("Device", style="cyan")
+        table.add_column("Type", style="magenta")
+        
+        if usage:
+            table.add_column("Total Size", justify="right")
+            table.add_column("Used", justify="right")
+            
+        table.add_column("Health", justify="center")
+
+        for disk_name in disks:
+            dev_path = f"/dev/{disk_name}"
+            
+            # Determine likely type for smartctl
+            dev_type = "nvme" if "nvme" in disk_name else "ata"
+            dev_flag = f"-d {dev_type}"
+            
+            # 2. Run detailed check
+            # We use -a to get attributes (needed for usage) and health status
+            cmd_args = f"-a {dev_path} {dev_flag}"
+            smart_cmd = f"sudo -S smartctl {cmd_args}" if password else f"sudo -n smartctl {cmd_args}"
+            _, smart_out = executor.run_command(hostname, smart_cmd, input_data=password)
+            
+            smart_out = smart_out or ""
+            out_lower = smart_out.lower()
+
+            # Parse Health
+            health_status = "Unknown"
+            warnings = []
+
+            # 1. Overall Health Check
+            if "passed" in out_lower or "ok" in out_lower:
+                health_status = "PASSED"
+            elif "failed" in out_lower:
+                health_status = "FAILED"
+
+            # 2. Sophisticated Attribute Analysis
+            if dev_type == "ata":
+                # Critical SATA attributes to monitor
+                critical_attrs = {
+                    "5": "Reallocated_Sector_Ct",
+                    "197": "Current_Pending_Sector",
+                    "198": "Offline_Uncorrectable",
+                }
+                for line in smart_out.splitlines():
+                    parts = line.split()
+                    if len(parts) > 0 and parts[0].isdigit():
+                        attr_id = parts[0]
+                        if attr_id in critical_attrs:
+                            raw_val = parts[-1]
+                            # Remove any (Average X) suffix
+                            raw_val = raw_val.split(' ')[0]
+                            if raw_val != "0":
+                                warnings.append(f"{critical_attrs[attr_id]}:{raw_val}")
+            elif dev_type == "nvme":
+                # Critical NVMe attributes
+                if "Critical Warning:" in smart_out:
+                    # Extract value after colon
+                    val = smart_out.split("Critical Warning:")[1].split('\n')[0].strip()
+                    if val != "0x00":
+                        warnings.append(f"CritWarn:{val}")
+                if "Media and Data Integrity Errors:" in smart_out:
+                    val = smart_out.split("Media and Data Integrity Errors:")[1].split('\n')[0].strip()
+                    if val != "0":
+                        warnings.append(f"IntegrityErr:{val}")
+
+            # 3. Final Health Determination
+            if health_status == "FAILED":
+                health = "[red]FAILED[/red]"
+            elif warnings:
+                warn_str = ", ".join(warnings)
+                health = f"[yellow]WARNING ({warn_str})[/yellow]"
+            elif health_status == "PASSED":
+                health = "[green]PASSED[/green]"
+            else:
+                health = "[yellow]Unknown[/yellow]"
+                
+                # Fallback: If it's an 'sd' device and health is unknown, probe partitions (next level)
+                if dev_path.startswith('/dev/sd'):
+                    part_cmd = f"lsblk {dev_path} -n -o NAME | grep -v '^{dev_path.split('/')[-1]}$'"
+                    p_success, p_out = executor.run_command(hostname, part_cmd)
+                    if p_success and p_out:
+                        partitions = [p.strip() for p in p_out.split('\n') if p.strip()]
+                        for p_name in partitions:
+                            p_path = f"/dev/{p_name}"
+                            p_smart_cmd = f"sudo -S smartctl -H {p_path} {dev_flag} {dev_type}" if password else f"sudo -n smartctl -H {p_path} {dev_flag} {dev_type}"
+                            _, p_smart_out = executor.run_command(hostname, p_smart_cmd, input_data=password)
+                            p_out_lower = (p_smart_out or "").lower()
+                            if "passed" in p_out_lower or "ok" in p_out_lower:
+                                health = "[green]PASSED[/green]"
+                                break
+                            elif "failed" in p_out_lower:
+                                health = "[red]FAILED[/red]"
+                                break
+
+            # Parse Usage (Optional)
+            row_data = [dev_path, dev_type]
+            if usage:
+                total_size = "N/A"
+                used_size = "N/A"
+                
+                for s_line in smart_out.splitlines():
+                    # Logic for NVMe
+                    if "Total NVM Capacity" in s_line:
+                        total_size = s_line.split('[')[-1].split(']')[0] if '[' in s_line else s_line.split(':')[-1].strip()
+                    if "Data Units Written" in s_line:
+                        used_size = s_line.split('[')[-1].split(']')[0] if '[' in s_line else s_line.split(':')[-1].strip()
+                    
+                    # Logic for SATA/SCSI
+                    if "User Capacity" in s_line:
+                        total_size = s_line.split('[')[-1].split(']')[0] if '[' in s_line else s_line.split(':')[-1].strip()
+
+                row_data.extend([total_size, used_size])
+            
+            row_data.append(health)
+            table.add_row(*row_data)
+
+        console.print(table)
+
     @main.command(name="llm-check")
     @click.option("--host", default="dgx", help="Target host.")
     @click.option("--port", default=8001, help="Target port.")
@@ -220,7 +380,7 @@ def create_cli():
             checker.log("LLM Server is UP and responding.", "OK")
         else:
             checker.log("LLM Server is DOWN or unreachable.", "FAIL")
-
+    
         if json:
             print(checker.to_json())
         else:

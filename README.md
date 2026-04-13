@@ -7,6 +7,8 @@ Deep integration with Prometheus, Grafana, and remote system monitoring to provi
 
 ## Features
 - **Real-time TUI Dashboard**: A professional Textual-based terminal interface for fleet-wide monitoring.
+- **LLM Health & Performance Diagnostics**: Specialized tools to verify LLM connectivity and measure inference performance (TTFT, TPS).
+- **Disk Health Monitoring**: Remote disk health checks using `smartctl` to detect drive failures and wear levels across the fleet.
 - **Remote Host Management**: Manage a fleet of AI nodes via a YAML configuration file or interactive TUI setup.
 - **Automatic Hardware Discovery**: Probe remote hosts to automatically detect GPU and CPU types.
 - **Interactive Monitoring**: Launch `top`, `nvtop`, or `nvitop` on remote hosts via SSH.
@@ -55,6 +57,18 @@ Launch the interactive fleet dashboard:
 cloudmesh-ai-monitor dashboard
 ```
 
+### LLM Diagnostics
+Verify the health and performance of your LLM endpoints:
+```bash
+# Run a comprehensive health check on the local vLLM instance
+cloudmesh-ai-monitor llm-check
+```
+This command performs:
+- **Process Check**: Verifies the vLLM process is running.
+- **API Probe**: Checks `/v1/models` for responsiveness.
+- **Chat Probe**: Sends a streaming request to measure **TTFT** and **TPS**.
+- **Diagnostics**: Fetches KV cache usage and request queue depth from `/metrics`.
+
 ### Host Setup
 Manage your monitoring fleet via CLI:
 ```bash
@@ -96,8 +110,14 @@ cloudmesh-ai-monitor stats cpu dgx-01
 
 ### Infrastructure Health
 ```bash
+# Check GPU exporter health
 cloudmesh-ai-monitor check-exporter --url http://dgx-node:9100/metrics
+
+# Scan for Out-of-Memory events
 cloudmesh-ai-monitor oom-check
+
+# Check disk health status on a remote host
+cloudmesh-ai-monitor health status disk dgx-01
 ```
 
 ## Dashboard Manual
@@ -106,6 +126,12 @@ The `cloudmesh-ai-monitor dashboard` provides a real-time TUI for monitoring you
 
 ### Monitoring Logic
 The dashboard works by executing a **Probe Command** on each active remote host via SSH at a regular interval. The output of this command is parsed to update the GPU utilization, temperature, and memory usage displayed in the UI.
+
+### Performance Metrics
+When running LLM diagnostics, the following key performance indicators (KPIs) are tracked:
+- **TTFT (Time to First Token)**: The duration between sending a request and receiving the first token. This is the primary measure of perceived latency.
+- **TPS (Tokens Per Second)**: The throughput of the model, calculated as total tokens generated divided by the total generation time.
+- **Queue Depth**: Monitored via `Waiting Req` (requests in queue) and `Running Req` (requests currently being processed).
 
 ### Probe Commands
 Depending on the hardware of the remote machine, you should use different probe commands. You can configure these in the TUI "Edit Host" screen or directly in your configuration.
@@ -136,6 +162,13 @@ your_username ALL=(ALL) NOPASSWD: /usr/local/bin/cm-mac-smi
 ```
 *(Replace `your_username` with the SSH user and verify the path to `cm-mac-smi` using `which cm-mac-smi`)*
 
+**Handling Sudo for Disk Health (Linux):**
+The `health status disk` command requires `smartctl`, which typically needs root privileges. To enable non-interactive checks, add the following line to the `/etc/sudoers` file on your Linux hosts (using `visudo`):
+```text
+your_username ALL=(ALL) NOPASSWD: /usr/sbin/smartctl
+```
+*(Replace `your_username` with the SSH user and verify the path to `smartctl` using `which smartctl`)*
+
 #### Custom Probes
 You can use any command that returns hardware metrics. If you use a custom command, ensure it returns data in a format the monitor can parse, or use the **Probe** button in the TUI to verify the raw output.
 
@@ -147,10 +180,14 @@ You can use any command that returns hardware metrics. If you use a custom comma
 ## Key Achievements
 
 - **Textual TUI**: Implemented a professional Terminal User Interface using the `textual` framework, providing a real-time fleet dashboard and an interactive host management setup screen.
+- **LLM Performance Observability**: Developed a streaming-based diagnostic tool to measure critical LLM metrics including **TTFT** and **TPS**, enabling precise performance benchmarking.
+- **Hardware Health Diagnostics**: Implemented remote disk health monitoring using `smartctl` to proactively identify failing drives across the AI infrastructure.
 - **Modular Architecture**: Organized the code into `terminalgui` (for TUI), `command` (for CLI), and `grafana` (for future web-based monitoring) frameworks.
 - **Comprehensive CLI**: Added a wide array of commands via `click` and `rich`, including:
   - `cmc monitor setup [add|remove|activate|deactivate]`: Manage monitored hosts.
   - `cmc monitor dashboard`: Launch the Textual TUI (default) or Grafana.
+  - `cmc monitor llm-check`: Perform deep health and performance diagnostics on LLM endpoints.
+  - `cmc monitor health status disk [host]`: Check SMART health status of disks on a remote host.
   - `cmc monitor run [host] [tool]`: Execute interactive tools like `nvtop` on remote hosts.
   - `cmc monitor stats [gpu|cpu] [hosts]`: Aggregate hardware stats across the fleet.
   - `cmc monitor probe [hosts]`: Auto-detect hardware and update configuration.

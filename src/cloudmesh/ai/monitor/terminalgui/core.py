@@ -558,9 +558,10 @@ class RemoteExecutor:
             console.print(f"[bold red]Error launching {tool} on {hostname}:[/bold red] {e}")
 
     @staticmethod
-    def run_command(hostname: str, command: str) -> Tuple[bool, str]:
+    def run_command(hostname: str, command: str, input_data: Optional[str] = None) -> Tuple[bool, str]:
         """Runs a non-interactive command and returns (success, output/error)."""
         # Print the command being issued in black for debugging/transparency
+        # We don't print input_data for security reasons
         console.print(f"[black]Executing on {hostname}: {command}[/black]")
         
         import socket
@@ -570,7 +571,7 @@ class RemoteExecutor:
         if is_local:
             # Run locally without SSH
             try:
-                result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=10)
+                result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=10, input=input_data)
                 success = result.returncode == 0
                 output = result.stdout.strip() if success else (result.stderr.strip() or f"Command failed with return code {result.returncode}")
             except Exception as e:
@@ -579,7 +580,7 @@ class RemoteExecutor:
             # Run via SSH
             cmd = ["ssh", hostname, command]
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10, input=input_data)
                 success = result.returncode == 0
                 output = result.stdout.strip() if success else (result.stderr.strip() or f"Command failed with return code {result.returncode}")
             except Exception as e:
