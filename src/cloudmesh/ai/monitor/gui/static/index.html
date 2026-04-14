@@ -55,11 +55,11 @@
                             </td>
                             <td class="py-2 px-4 text-slate-400" x-text="host.refresh_interval + 's'"></td>
                                    <td class="py-2 px-4 font-mono text-xs" :class="!host.is_stale ? 'text-slate-400' : (host.is_probing ? 'text-yellow-400 font-bold' : 'text-red-400 font-bold')" x-text="humanizeTime(host.last_updated)"></td>
-                                 <td class="py-2 px-4 font-mono text-xs text-right" :class="getMetricColor(host.gpu_usage, 'usage')" x-text="formatMetric(host.gpu_usage, 'usage')"></td>
-                                 <td class="py-2 px-4 font-mono text-xs text-right" :class="getMetricColor(host.gpu_temp, 'temp')" x-text="formatMetric(host.gpu_temp, 'temp')"></td>
-                                 <td class="py-2 px-4 font-mono text-xs text-right" :class="getMetricColor(host.mem_usage, 'mem')" x-text="formatMetric(host.mem_usage, 'mem')"></td>
-                                  <td class="py-2 px-4 font-mono text-xs text-right" :class="getMetricColor(host.cpu_usage, 'usage')" x-text="formatMetric(host.cpu_usage, 'usage')"></td>
-                                  <td class="py-2 px-4 font-mono text-xs text-right" :class="getMetricColor(host.cpu_temp, 'temp')" x-text="formatMetric(host.cpu_temp, 'temp')"></td>
+                                 <td class="py-2 px-4 font-mono text-xs text-right" :class="host.gpu_usage.color" x-text="host.gpu_usage.text"></td>
+                                 <td class="py-2 px-4 font-mono text-xs text-right" :class="host.gpu_temp.color" x-text="host.gpu_temp.text"></td>
+                                 <td class="py-2 px-4 font-mono text-xs text-right" :class="host.mem_usage.color" x-text="host.mem_usage.text"></td>
+                                  <td class="py-2 px-4 font-mono text-xs text-right" :class="host.cpu_usage.color" x-text="host.cpu_usage.text"></td>
+                                  <td class="py-2 px-4 font-mono text-xs text-right" :class="host.cpu_temp.color" x-text="host.cpu_temp.text"></td>
                             <td class="py-2 px-4 text-center">
                                 <div class="flex justify-center gap-2">
                                     <button @click="openEditModal(host)" class="p-1 hover:text-blue-400 transition"><i class="fa-solid fa-pen-to-square"></i></button>
@@ -202,65 +202,6 @@
                     } catch (e) {
                         alert('Error triggering probe');
                     }
-                },
-                formatMetric(val, type) {
-                    if (val === 'N/A' || val === null || val === undefined) return 'N/A';
-                    if (!Array.isArray(val)) return val;
-                    
-                    const filtered = val.filter(v => v !== 'N/A');
-                    if (filtered.length === 0) return 'N/A';
-
-                    if (type === 'temp') {
-                        return filtered.join(' ') + '°C';
-                    }
-                    
-                    if (type === 'usage') {
-                        return filtered.map(v => v + '%').join(' ');
-                    }
-                    
-                    if (type === 'mem') {
-                        const percs = [];
-                        const totals = [];
-                        
-                        val.forEach(item => {
-                            if (Array.isArray(item) && item.length >= 2) {
-                                if (item[0] !== 'N/A') percs.push(item[0] + '%');
-                                if (item[1] !== 'N/A') totals.push(item[1]);
-                            } else if (item !== 'N/A') {
-                                percs.push(item);
-                            }
-                        });
-
-                        if (percs.length === 0 && totals.length === 0) return 'N/A';
-
-                        const percStr = percs.join(' ');
-                        let totalStr = '';
-                        
-                        if (totals.length > 0) {
-                            const uniqueTotals = [...new Set(totals)];
-                            if (uniqueTotals.length === 1) {
-                                const size = uniqueTotals[0];
-                                totalStr = totals.length > 1 ? `${totals.length}*${size}GB` : `${size}GB`;
-                            } else {
-                                totalStr = uniqueTotals.join(', ') + ' GB';
-                            }
-                        }
-
-                        return totalStr ? `${percStr} (${totalStr})` : percStr;
-                    }
-                    
-                    return filtered.join(' ');
-                },
-                getMetricColor(val, type) {
-                    if (val === 'N/A' || !Array.isArray(val)) return 'text-slate-400';
-                    const numbers = val.filter(v => typeof v === 'number');
-                    if (numbers.length === 0) return 'text-slate-400';
-                    const maxVal = Math.max(...numbers);
-                    if (type === 'usage' && maxVal > 80) return 'text-red-400 font-bold';
-                    if (type === 'usage' && maxVal > 60) return 'text-yellow-400';
-                    if (type === 'temp' && maxVal > 80) return 'text-red-400 font-bold';
-                    if (type === 'temp' && maxVal > 60) return 'text-yellow-400';
-                    return 'text-green-400';
                 },
                 humanizeTime(timestamp) {
                     if (!timestamp) return 'Never';

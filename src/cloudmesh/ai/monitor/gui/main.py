@@ -9,6 +9,7 @@ import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 from cloudmesh.ai.monitor.terminalgui.core import HostManager, RemoteExecutor, cm_dgx_smi, cm_spark_smi, cm_mac_smi
+from cloudmesh.ai.monitor.gui.renderer import CellRenderer
 
 async def trigger_initial_probes():
     """Trigger an initial probe for all active hosts on startup."""
@@ -74,11 +75,11 @@ class HostStatus(BaseModel):
     active: bool
     refresh_interval: int
     probe_cmd: Optional[str] = None
-    gpu_usage: Any
-    gpu_temp: Any
-    mem_usage: Any
-    cpu_usage: Any
-    cpu_temp: Any
+    gpu_usage: Any # Rendered as {"text": str, "color": str}
+    gpu_temp: Any # Rendered as {"text": str, "color": str}
+    mem_usage: Any # Rendered as {"text": str, "color": str}
+    cpu_usage: Any # Rendered as {"text": str, "color": str}
+    cpu_temp: Any # Rendered as {"text": str, "color": str}
     last_probe_success: Optional[bool] = None
     last_updated: Optional[str] = None
     is_probing: bool = False
@@ -110,11 +111,11 @@ async def get_hosts():
             active=info.get("active", True),
             refresh_interval=interval,
             probe_cmd=info.get("probe_cmd"),
-            gpu_usage=info.get("gpu_usage", "N/A"),
-            gpu_temp=info.get("gpu_temp", "N/A"),
-            mem_usage=info.get("mem_usage", "N/A"),
-            cpu_usage=info.get("cpu_usage", "N/A"),
-            cpu_temp=info.get("cpu_temp", "N/A"),
+            gpu_usage=CellRenderer.render_cell("gpu_usage", info.get("gpu_usage", "N/A")),
+            gpu_temp=CellRenderer.render_cell("gpu_temp", info.get("gpu_temp", "N/A")),
+            mem_usage=CellRenderer.render_cell("mem_usage", info.get("mem_usage", "N/A")),
+            cpu_usage=CellRenderer.render_cell("cpu_usage", info.get("cpu_usage", "N/A")),
+            cpu_temp=CellRenderer.render_cell("cpu_temp", info.get("cpu_temp", "N/A")),
             last_probe_success=info.get("last_probe_success"),
             last_updated=last_updated_str,
             is_probing=(label in in_flight_probes),
