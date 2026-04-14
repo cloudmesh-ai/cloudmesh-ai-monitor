@@ -10,6 +10,7 @@ from rich.panel import Panel
 
 from cloudmesh.ai.monitor.terminalgui.core import HostManager, RemoteExecutor
 from cloudmesh.ai.monitor.terminalgui.app import CloudmeshAIMonitorApp
+from cloudmesh.ai.monitor.gui.main import start_gui
 from cloudmesh.ai.monitor.llm_checker import LLMChecker
 
 console = Console()
@@ -137,16 +138,22 @@ def create_cli():
         console.print(Panel(f"Updated configuration saved to [bold cyan]{config_path}[/bold cyan]", title="Probe Complete", border_style="green"))
 
     @main.command(name="dashboard")
-    def dashboard_cmd():
+    @click.option("-g", "--gui", is_flag=True, help="Launch the Web GUI dashboard.")
+    @click.option("-t", "--terminal", is_flag=True, help="Launch the Terminal UI dashboard.")
+    @click.option("-p", "--port", type=int, default=8000, help="Port to run the Web GUI on.")
+    def dashboard_cmd(gui, terminal, port):
         """Real-time fleet dashboard."""
-        gui = get_gui_framework()
-        if gui == "terminalgui":
+        if gui:
+            console.print(f"[blue]Launching Web GUI on http://localhost:{port}...[/blue]")
+            start_gui(port=port)
+        elif terminal or not (gui or terminal):
+            # Default to TUI if -t is passed or no flag is provided
             app = CloudmeshAIMonitorApp()
             app.run()
-        elif gui == "grafana":
-            console.print("[yellow]Grafana dashboard is not yet implemented.[/yellow]")
         else:
-            console.print(f"[red]Unsupported GUI framework: {gui}[/red]")
+            # This case is technically covered by the logic above, but for clarity:
+            app = CloudmeshAIMonitorApp()
+            app.run()
 
     @main.command(name="check-exporter")
     @click.option("--url", default="http://localhost:9100/metrics", help="URL of the GPU exporter metrics endpoint.")

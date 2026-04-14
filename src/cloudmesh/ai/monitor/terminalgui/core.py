@@ -6,17 +6,47 @@ from typing import Tuple, Optional, List, Dict, Any
 import subprocess
 import requests
 import re
+import logging
+import os
+import copy
+import threading
+from datetime import datetime
 from rich.console import Console
 from cloudmesh.ai.common.io import load_yaml, dump_yaml
+
+# Logging configuration
+log_path = Path("~/.config/cloudmesh/ai/monitor.log").expanduser()
+log_path.parent.mkdir(parents=True, exist_ok=True)
+
+# Get log level from environment variable, default to INFO
+log_level_str = os.environ.get("CLOUDMESH_LOG_LEVEL", "INFO").upper()
+log_level = getattr(logging, log_level_str, logging.INFO)
+
+# Explicitly configure the root logger to ensure the file is created
+root_logger = logging.getLogger()
+root_logger.setLevel(log_level)
+
+# Remove existing handlers to avoid duplicate logs if re-initialized
+for handler in root_logger.handlers[:]:
+    root_logger.removeHandler(handler)
+
+# Create file handler
+file_handler = logging.FileHandler(str(log_path))
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+root_logger.addHandler(file_handler)
+
+logger = logging.getLogger("cloudmesh.ai.monitor")
 
 console = Console()
 
 class HostManager:
-    """Manages remote AI hosts via a YAML configuration file."""
-    def __init__(self, config_path: str = "~/.config/cloudmesh/ai/hosts.yaml"):
+    """Manages remote AI hosts via YAML configuration files."""
+    def __init__(self, config_path: str = "~/.config/cloudmesh/ai/hosts.yaml", status_path: str = "~/.config/cloudmesh/ai/hosts-status.yaml"):
         self.config_path = Path(config_path).expanduser()
+        self.status_path = Path(status_path).expanduser()
         self.full_cfg = self._load_full_config()
         self.hosts_data = self.full_cfg.get("cloudmesh", {}).get("ai", {}).get("hosts", {})
+        self._lock = threading.Lock()
 
     def _load_full_config(self) -> Dict[str, Any]:
         if not self.config_path.exists():
@@ -32,7 +62,29 @@ class HostManager:
 
     def save(self):
         """Persists the current configuration to disk."""
-        dump_yaml(self.config_path, self.full_cfg)
+        with self._lock:
+            dump_yaml(self.config_path, self.full_cfg)
+
+    def _load_status(self) -> Dict[str, Any]:
+        """Loads the status configuration file and returns the hosts dictionary."""
+        if not self.status_path.exists():
+            return {}
+        cfg = load_yaml(self.status_path)
+        if not cfg or not isinstance(cfg, dict):
+            return {}
+        return cfg.get("cloudmesh", {}).get("ai", {}).get("hosts", {})
+
+    def _save_status(self, hosts_status: Dict[str, Any]):
+        """Persists the status configuration to disk safely with full hierarchy."""
+        full_status_cfg = {
+            "cloudmesh": {
+                "ai": {
+                    "hosts": hosts_status
+                }
+            }
+        }
+        with self._lock:
+            dump_yaml(self.status_path, full_status_cfg)
 
     def resolve_host(self, identifier: str) -> Optional[str]:
         """Resolves a label to the actual SSH hostname."""
@@ -41,28 +93,27 @@ class HostManager:
         return identifier
 
     def get_host_info(self, label: str) -> Dict[str, Any]:
-        """Returns metadata for a specific host identified by label."""
-        return self.hosts_data.get(label, {})
+        """Returns metadata for a specific host, merging config and status."""
+        info = self.hosts_data.get(label, {}).copy()
+        status = self._load_status().get(label, {})
+        info.update(status)
+        return info
 
     def add_host(self, label: str, hostname: str, active: bool = True, refresh_interval: int = 10, probe_cmd: Optional[str] = None):
         """Adds or updates a host in the configuration using label as the unique key."""
         default_probe = "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits"
         if label in self.hosts_data:
-            # Update existing host, preserving current metrics
+            # Update existing host
             self.hosts_data[label]["hostname"] = hostname
             self.hosts_data[label]["active"] = active
             self.hosts_data[label]["refresh_interval"] = refresh_interval
             self.hosts_data[label]["probe_cmd"] = probe_cmd or self.hosts_data[label].get("probe_cmd", default_probe)
+            logger.info(f"Updated host: {label} ({hostname})")
         else:
-            # Add new host
+            # Add new host - only store config here
             self.hosts_data[label] = {
                 "hostname": hostname,
                 "active": active,
-                "gpu_usage": "N/A",
-                "gpu_temp": "N/A",
-                "mem_usage": "N/A",
-                "cpu_usage": "N/A",
-                "cpu_temp": "N/A",
                 "refresh_interval": refresh_interval,
                 "probe_cmd": probe_cmd or default_probe
             }
@@ -71,19 +122,35 @@ class HostManager:
                 order = self.full_cfg["cloudmesh"]["ai"].setdefault("host_order", [])
                 if label not in order:
                     order.append(label)
+            logger.info(f"Added new host: {label} ({hostname})")
         self.save()
 
-    def update_metrics(self, label: str, gpu_usage: Any, gpu_temp: Any, mem_usage: Any, cpu_usage: Any = "N/A", cpu_temp: Any = "N/A", last_probe_success=None):
-        """Updates the metrics for a host in the configuration file."""
-        if label in self.hosts_data:
-            self.hosts_data[label]["gpu_usage"] = gpu_usage
-            self.hosts_data[label]["gpu_temp"] = gpu_temp
-            self.hosts_data[label]["mem_usage"] = mem_usage
-            self.hosts_data[label]["cpu_usage"] = cpu_usage
-            self.hosts_data[label]["cpu_temp"] = cpu_temp
-            if last_probe_success is not None:
-                self.hosts_data[label]["last_probe_success"] = last_probe_success
-            self.save()
+    def update_metrics(self, label: str, gpu_usage: Any, gpu_temp: Any, mem_usage: Any, cpu_usage: Any = "N/A", cpu_temp: Any = "N/A", last_probe_success=None, last_probe_time: Any = "N/A"):
+        """Updates the metrics for a host in the status file."""
+        # We use the status file for metrics to avoid frequent writes to the main config
+        hosts_status = self._load_status()
+        
+        host_status = hosts_status.setdefault(label, {})
+        host_status["gpu_usage"] = gpu_usage
+        host_status["gpu_temp"] = gpu_temp
+        host_status["mem_usage"] = mem_usage
+        host_status["cpu_usage"] = cpu_usage
+        host_status["cpu_temp"] = cpu_temp
+        
+        # Group probe results into the 'probe' dictionary
+        probe_info = host_status.setdefault("probe", {})
+        probe_info["time"] = last_probe_time if last_probe_time != "N/A" else datetime.now().isoformat()
+        probe_info["output"] = {
+            "gpu_usage": copy.deepcopy(gpu_usage),
+            "gpu_temp": copy.deepcopy(gpu_temp),
+            "mem_usage": copy.deepcopy(mem_usage),
+            "cpu_usage": copy.deepcopy(cpu_usage),
+            "cpu_temp": copy.deepcopy(cpu_temp),
+        }
+        
+        self._save_status(hosts_status)
+        if last_probe_success is False:
+            logger.warning(f"Probe failed for host: {label}")
 
     def remove_host(self, label: str):
         """Removes a host from the configuration."""
@@ -95,6 +162,7 @@ class HostManager:
                 if label in order:
                     order.remove(label)
             self.save()
+            logger.info(f"Removed host: {label}")
 
     def rename_host(self, old_label: str, new_label: str, hostname: str, active: bool = True, refresh_interval: int = 10, probe_cmd: Optional[str] = None):
         """Renames a label while preserving its metrics."""
@@ -107,6 +175,7 @@ class HostManager:
                 data["probe_cmd"] = probe_cmd
             self.hosts_data[new_label] = data
             self.save()
+            logger.info(f"Renamed host: {old_label} -> {new_label}")
         else:
             # Fallback to add_host if old_label not found
             self.add_host(new_label, hostname, active, refresh_interval, probe_cmd)
@@ -116,6 +185,7 @@ class HostManager:
         if label in self.hosts_data:
             self.hosts_data[label]["active"] = status
             self.save()
+            logger.info(f"Set host {label} active status to {status}")
 
     def move_host(self, label: str, direction: str):
         """Moves a host up or down in the configuration order."""
@@ -140,20 +210,24 @@ class HostManager:
         self.save()
 
     def get_hosts_ordered(self) -> List[Tuple[str, Dict[str, Any]]]:
-        """Returns hosts in the order specified by host_order."""
+        """Returns hosts in the order specified by host_order, merging status."""
         order = self.full_cfg.get("cloudmesh", {}).get("ai", {}).get("host_order", [])
         if not order:
-            return list(self.hosts_data.items())
+            # If no order, use hosts_data keys
+            labels = list(self.hosts_data.keys())
+        else:
+            labels = order
         
         ordered_hosts = []
-        for label in order:
+        for label in labels:
             if label in self.hosts_data:
-                ordered_hosts.append((label, self.hosts_data[label]))
+                ordered_hosts.append((label, self.get_host_info(label)))
         
-        # Add any hosts that might be in hosts_data but not in host_order
-        for label, data in self.hosts_data.items():
-            if label not in order:
-                ordered_hosts.append((label, data))
+        # Add any hosts that might be in hosts_data but not in order
+        if order:
+            for label, data in self.hosts_data.items():
+                if label not in order:
+                    ordered_hosts.append((label, self.get_host_info(label)))
                 
         return ordered_hosts
 
@@ -171,7 +245,9 @@ def cm_dgx_smi(hostname: str, devices: str = "0"):
         gpu_cmd = "nvidia-smi --query-gpu=index,utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits"
         success_gpu, gpu_res = RemoteExecutor.run_command(hostname, gpu_cmd)
         if not success_gpu or not gpu_res:
-            return f"Error: nvidia-smi failed on {hostname}"
+            err = f"Error: nvidia-smi failed on {hostname}"
+            logger.error(err)
+            return err
         
         requested_devices = [d.strip() for d in devices.split(",")]
         
@@ -196,7 +272,9 @@ def cm_dgx_smi(hostname: str, devices: str = "0"):
                         totals.append(None)
         
         if not utils:
-            return f"Error: No matching GPUs found for devices {devices} on {hostname}"
+            err = f"Error: No matching GPUs found for devices {devices} on {hostname}"
+            logger.error(err)
+            return err
             
         # Memory: store as list of [perc, total]
         mem_list = []
@@ -298,7 +376,9 @@ def cm_dgx_smi(hostname: str, devices: str = "0"):
         }
 
     except Exception as e:
-        return f"Error retrieving DGX metrics: {e}"
+        err = f"Error retrieving DGX metrics: {e}"
+        logger.exception(err)
+        return err
 
 def cm_spark_smi(hostname: str):
     """
@@ -313,7 +393,9 @@ def cm_spark_smi(hostname: str):
         gpu_cmd = "nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits"
         success_gpu, gpu_res = RemoteExecutor.run_command(hostname, gpu_cmd)
         if not success_gpu or not gpu_res:
-            return f"Error: nvidia-smi failed on {hostname}"
+            err = f"Error: nvidia-smi failed on {hostname}"
+            logger.error(err)
+            return err
         
         # Process all GPUs to support the requested formatting
         utils, temps, percs, totals = [], [], [], []
@@ -335,7 +417,9 @@ def cm_spark_smi(hostname: str):
                     totals.append(None)
 
         if not utils:
-            return f"Error: nvidia-smi failed on {hostname}"
+            err = f"Error: nvidia-smi failed on {hostname}"
+            logger.error(err)
+            return err
 
         # Memory: store as list of [perc, total]
         mem_list = []
@@ -422,7 +506,9 @@ def cm_spark_smi(hostname: str):
         }
 
     except Exception as e:
-        return f"Error retrieving spark metrics: {e}"
+        err = f"Error retrieving spark metrics: {e}"
+        logger.exception(err)
+        return err
 
 def cm_mac_smi(hostname: str):
     """
@@ -439,15 +525,19 @@ def cm_mac_smi(hostname: str):
             try:
                 # 1. Get GPU and Thermal data (requires sudo)
                 cmd = ["sudo", "-n", "powermetrics", "--samplers", "gpu_power,thermal", "-n", "1", "-i", "500"]
-                res = subprocess.check_output(cmd).decode('utf-8')
+                res_obj = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                res = res_obj.stdout
                 
                 # Memory info is also local
-                mem_total_bytes = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip())
+                mem_res = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=5)
+                mem_total_bytes = int(mem_res.stdout.strip())
                 mem_total_mib = mem_total_bytes // (1024**2)
-                vm_stat = subprocess.check_output(["vm_stat"]).decode('utf-8')
+                
+                vm_res = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5)
+                vm_stat = vm_res.stdout
                 pages_active = int(re.search(r"Pages active:\s+(\d+)", vm_stat).group(1))
                 mem_used_mib = (pages_active * 4096) // (1024**2)
-            except subprocess.CalledProcessError as e:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 if e.returncode == 64:
                     return "Error: powermetrics failed (exit 64). This usually means sudo requires a password. Please add 'youruser ALL=(ALL) NOPASSWD: /usr/bin/powermetrics' to /etc/sudoers."
                 return f"Error retrieving metrics: {e}"
@@ -544,7 +634,9 @@ def cm_mac_smi(hostname: str):
         }
 
     except Exception as e:
-        return f"Error retrieving metrics: {e}"
+        err = f"Error retrieving metrics: {e}"
+        logger.exception(err)
+        return err
 
 class RemoteExecutor:
     """Handles execution of commands on remote hosts via SSH."""
@@ -555,6 +647,7 @@ class RemoteExecutor:
         try:
             subprocess.run(cmd)
         except Exception as e:
+            logger.error(f"Error launching {tool} on {hostname}: {e}")
             console.print(f"[bold red]Error launching {tool} on {hostname}:[/bold red] {e}")
 
     @staticmethod
@@ -563,6 +656,7 @@ class RemoteExecutor:
         # Print the command being issued in black for debugging/transparency
         # We don't print input_data for security reasons
         console.print(f"[black]Executing on {hostname}: {command}[/black]")
+        logger.debug(f"Executing on {hostname}: {command}")
         
         import socket
         local_hostname = socket.gethostname()
@@ -588,6 +682,10 @@ class RemoteExecutor:
         
         # Print the result of the command in black
         console.print(f"[black]Result: {output}[/black]")
+        if not success:
+            logger.warning(f"Command failed on {hostname}: {command}. Result: {output}")
+        else:
+            logger.debug(f"Command succeeded on {hostname}: {command}")
         return success, output
 
     @staticmethod

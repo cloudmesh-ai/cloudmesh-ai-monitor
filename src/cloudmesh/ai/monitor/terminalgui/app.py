@@ -579,18 +579,18 @@ class EditHostModal(ModalScreen):
             parts = stripped_cmd.split()
             target_host = parts[1] if len(parts) > 1 else hostname
             output = cm_mac_smi(target_host)
-            success = not output.startswith("Error")
+            success = isinstance(output, dict)
         elif stripped_cmd.startswith("cm-spark-smi"):
             parts = stripped_cmd.split()
             target_host = parts[1] if len(parts) > 1 else hostname
             output = cm_spark_smi(target_host)
-            success = not output.startswith("Error")
+            success = isinstance(output, dict)
         elif stripped_cmd.startswith("cm-dgx-smi"):
             parts = stripped_cmd.split()
             target_host = parts[1] if len(parts) > 1 else hostname
             devices = parts[2] if len(parts) > 2 else "0"
             output = cm_dgx_smi(target_host, devices)
-            success = not output.startswith("Error")
+            success = isinstance(output, dict)
         else:
             executor = RemoteExecutor()
             full_cmd = (probe_cmd if probe_cmd.startswith("nvidia-smi") else f"nvidia-smi {probe_cmd}")
@@ -599,6 +599,19 @@ class EditHostModal(ModalScreen):
         if isinstance(self.app.screen, DashboardScreen):
             output = self.app.screen._clean_probe_output(output)
         
+        if success:
+            hm = HostManager()
+            if isinstance(output, dict):
+                hm.update_metrics(
+                    self.host_to_edit, 
+                    output.get("gpu_usage", "N/A"), 
+                    output.get("gpu_temp", "N/A"), 
+                    output.get("mem_usage", "N/A"), 
+                    cpu_usage=output.get("cpu_usage", "N/A"), 
+                    cpu_temp=output.get("cpu_temp", "N/A"), 
+                    last_probe_success=True
+                )
+
         self.app.push_screen(ProbeResultScreen(output))
 
     def _refresh_parent(self):
@@ -723,7 +736,7 @@ class AddHostScreen(Screen):
                 f.write(debug_start)
             
             output = cm_mac_smi(target_host)
-            success = not output.startswith("Error")
+            success = isinstance(output, dict)
         elif stripped_cmd.startswith("cm-spark-smi"):
             parts = stripped_cmd.split()
             target_host = parts[1] if len(parts) > 1 else hostname
@@ -737,7 +750,7 @@ class AddHostScreen(Screen):
                 f.write(debug_start)
             
             output = cm_spark_smi(target_host)
-            success = not output.startswith("Error")
+            success = isinstance(output, dict)
         elif stripped_cmd.startswith("cm-dgx-smi"):
             parts = stripped_cmd.split()
             # Format: cm-dgx-smi [target_host] [devices]
@@ -765,7 +778,7 @@ class AddHostScreen(Screen):
                 f.write(debug_start)
             
             output = cm_dgx_smi(target_host, devices)
-            success = not output.startswith("Error")
+            success = isinstance(output, dict)
         else:
             full_cmd = self.app.screen._get_full_probe_cmd(probe_cmd) if isinstance(self.app.screen, DashboardScreen) else (probe_cmd if probe_cmd.startswith("nvidia-smi") else f"nvidia-smi {probe_cmd}")
             
@@ -789,6 +802,19 @@ class AddHostScreen(Screen):
             # Fallback cleaning if not on DashboardScreen
             if output:
                 output = "\n".join([l for l in output.splitlines() if not l.strip().startswith("**")])
+ 
+        if success and self.host_to_edit:
+            hm = HostManager()
+            if isinstance(output, dict):
+                hm.update_metrics(
+                    self.host_to_edit, 
+                    output.get("gpu_usage", "N/A"), 
+                    output.get("gpu_temp", "N/A"), 
+                    output.get("mem_usage", "N/A"), 
+                    cpu_usage=output.get("cpu_usage", "N/A"), 
+                    cpu_temp=output.get("cpu_temp", "N/A"), 
+                    last_probe_success=True
+                )
 
         self.app.notify("Probe command returned", severity="information")
 
