@@ -8,7 +8,8 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 
-from cloudmesh.ai.monitor.terminalgui.core import HostManager, RemoteExecutor
+from cloudmesh.ai.monitor.terminalgui.core import HostManager
+from cloudmesh.ai.monitor.probe import RemoteExecutor
 from cloudmesh.ai.monitor.terminalgui.app import CloudmeshAIMonitorApp
 from cloudmesh.ai.monitor.gui.main import start_gui
 from cloudmesh.ai.monitor.llm_checker import LLMChecker

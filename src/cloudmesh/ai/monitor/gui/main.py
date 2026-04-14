@@ -8,8 +8,9 @@ import os
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-from cloudmesh.ai.monitor.terminalgui.core import HostManager, RemoteExecutor, cm_dgx_smi, cm_spark_smi, cm_mac_smi
-from cloudmesh.ai.monitor.gui.renderer import CellRenderer
+from cloudmesh.ai.monitor.terminalgui.core import HostManager
+from cloudmesh.ai.monitor.probe import RemoteExecutor, cm_dgx_smi, cm_spark_smi, cm_mac_smi
+from cloudmesh.ai.monitor.renderer import CellRenderer
 
 async def trigger_initial_probes():
     """Trigger an initial probe for all active hosts on startup."""

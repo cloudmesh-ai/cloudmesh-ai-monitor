@@ -22,7 +22,9 @@ from textual.binding import Binding
 from textual.events import Key
 
 # Ensure these are available in your PYTHONPATH
-from cloudmesh.ai.monitor.terminalgui.core import HostManager, RemoteExecutor, cm_mac_smi, cm_spark_smi, cm_dgx_smi
+from cloudmesh.ai.monitor.terminalgui.core import HostManager
+from cloudmesh.ai.monitor.probe import RemoteExecutor, cm_mac_smi, cm_spark_smi, cm_dgx_smi
+from cloudmesh.ai.monitor.renderer import CellRenderer
 
 
 class DetailScreen(ModalScreen):
@@ -48,9 +50,13 @@ class DetailScreen(ModalScreen):
 
 class ProbeResultScreen(ModalScreen):
     """A modal screen that displays the raw output of a probe command."""
-    def __init__(self, output: str):
+    def __init__(self, output: Any):
         super().__init__()
-        self.output = output
+        # Ensure output is a string for rendering in Static widget
+        if isinstance(output, dict):
+            self.output = "\n".join([f"{k}: {v}" for k, v in output.items()])
+        else:
+            self.output = str(output)
 
     def compose(self) -> ComposeResult:
         with Middle():
@@ -95,66 +101,34 @@ class DashboardScreen(Screen):
         return f"nvidia-smi {probe_cmd}"
 
     def _render_metric(self, value: Any, metric_type: str) -> str:
-        """Renders raw metrics (now lists) into user-friendly display strings."""
-        if not value or value == "N/A":
-            return ""
-
-        # Handle case where value might still be a string (legacy or error)
-        if isinstance(value, str):
-            if value == "N/A": return ""
-            # Convert space-separated string to list for consistent processing
-            if metric_type == "mem":
-                # Legacy "perc/total" string
-                parts = value.split()
-                mem_list = []
-                for p in parts:
-                    if "/" in p:
-                        mem_list.append(p.split("/", 1))
-                    else:
-                        mem_list.append([p, "N/A"])
-                value = mem_list
-            else:
-                value = value.split()
-
-        if not value:
-            return ""
-
-        if metric_type == "temp":
-            vals = " ".join([str(v) for v in value if v != "N/A"])
-            return f"{vals}°C" if vals else ""
-        elif metric_type == "usage":
-            vals = " ".join([str(v) for v in value if v != "N/A"])
-            return f"{vals}%" if vals else ""
-        elif metric_type == "mem":
-            # value is expected to be a list of [perc, total]
-            percs = []
-            totals = []
-            for item in value:
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    p, t = item[0], item[1]
-                    if p != "N/A": percs.append(f"{p}%")
-                    if t != "N/A": totals.append(str(t))
-                elif item != "N/A":
-                    percs.append(str(item))
-            
-            perc_str = " ".join(percs)
-            if not perc_str and not totals: return ""
-            
-            if not totals:
-                return perc_str
-            
-            # Determine total memory display
-            unique_totals = list(set(totals))
-            if len(unique_totals) == 1:
-                size = unique_totals[0]
-                count = len(totals)
-                total_str = f"{count}*{size}GB" if count > 1 else f"{size}GB"
-            else:
-                total_str = f"{', '.join(totals)} GB"
-            
-            return f"{perc_str} [grey50]({total_str})[/grey50]"
+        """Renders raw metrics using the centralized CellRenderer."""
+        column_map = {
+            "usage": "gpu_usage" if "gpu" in str(value).lower() or "usage" in metric_type else "cpu_usage",
+            "temp": "gpu_temp" if "gpu" in str(value).lower() or "temp" in metric_type else "cpu_temp",
+            "mem": "mem_usage"
+        }
         
-        return str(value)
+        col_name = column_map.get(metric_type, "gpu_usage")
+        rendered = CellRenderer.render_cell(col_name, value)
+        
+        text = rendered["text"]
+        color_class = rendered["color"]
+        
+        if text == "N/A":
+            return ""
+            
+        # Map GUI CSS colors to Textual rich tags
+        color_tag = "white"
+        if "text-red-400" in color_class:
+            color_tag = "bold red"
+        elif "text-yellow-400" in color_class:
+            color_tag = "yellow"
+        elif "text-green-400" in color_class:
+            color_tag = "green"
+        elif "text-slate-400" in color_class:
+            color_tag = "grey50"
+            
+        return f"[{color_tag}]{text}[/]"
 
     BINDINGS = [
         Binding("a", "add_host", "Add Host"),
@@ -800,7 +774,7 @@ class AddHostScreen(Screen):
             output = self.app.screen._clean_probe_output(output)
         else:
             # Fallback cleaning if not on DashboardScreen
-            if output:
+            if isinstance(output, str) and output:
                 output = "\n".join([l for l in output.splitlines() if not l.strip().startswith("**")])
  
         if success and self.host_to_edit:
