@@ -36,9 +36,36 @@ class DetailScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         # Use the original columns from the dashboard
         cols = ["Hostname", "Label", "Active", "Interval", "GPU Usage", "GPU Temp", "Memory Usage (GB)", "CPU Usage", "CPU Temp"]
+        
+        # Map column names to CellRenderer keys
+        col_to_renderer = {
+            "GPU Usage": "gpu_usage",
+            "GPU Temp": "gpu_temp",
+            "Memory Usage (GB)": "mem_usage",
+            "CPU Usage": "cpu_usage",
+            "CPU Temp": "cpu_temp",
+        }
+        
         details = ""
         for col, val in zip(cols, self.row_data):
-            details += f"[bold cyan]{col}:[/]   {val}\n"
+            if col in col_to_renderer:
+                rendered = CellRenderer.render_cell(col_to_renderer[col], val)
+                # Convert GUI color classes to Textual rich tags
+                color_tag = "white"
+                if "text-red-400" in rendered["color"]:
+                    color_tag = "bold red"
+                elif "text-yellow-400" in rendered["color"]:
+                    color_tag = "yellow"
+                elif "text-green-400" in rendered["color"]:
+                    color_tag = "green"
+                elif "text-slate-400" in rendered["color"]:
+                    color_tag = "grey50"
+                
+                val_str = f"[{color_tag}]{rendered['text']}[/]"
+            else:
+                val_str = str(val)
+                
+            details += f"[bold cyan]{col}:[/]   {val_str}\n"
         
         with Middle():
             with Center():

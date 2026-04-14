@@ -86,7 +86,7 @@ class RemoteExecutor:
                 results["cpu"] = "arm"
         return results
 
-def cm_dgx_smi(hostname: str, devices: str = "0"):
+def cm_dgx_smi(hostname: str, devices: Optional[str] = None):
     """
     Returns a string mimicking:
     utilization.gpu, temperature.gpu, memory.used, memory.total, cpu_util, cpu_temp
@@ -103,7 +103,7 @@ def cm_dgx_smi(hostname: str, devices: str = "0"):
             logger.error(err)
             return err
         
-        requested_devices = [d.strip() for d in devices.split(",")]
+        requested_devices = [d.strip() for d in devices.split(",")] if devices else None
         
         utils, temps, percs, totals = [], [], [], []
         
@@ -111,7 +111,7 @@ def cm_dgx_smi(hostname: str, devices: str = "0"):
             parts = [x.strip() for x in line.split(',')]
             if len(parts) >= 5:
                 idx, util, temp, used, total = parts[:5]
-                if idx in requested_devices:
+                if requested_devices is None or idx in requested_devices:
                     utils.append(util)
                     temps.append(temp)
                     try:
@@ -126,7 +126,7 @@ def cm_dgx_smi(hostname: str, devices: str = "0"):
                         totals.append(None)
         
         if not utils:
-            err = f"Error: No matching GPUs found for devices {devices} on {hostname}"
+            err = f"Error: No matching GPUs found on {hostname}" if devices is None else f"Error: No matching GPUs found for devices {devices} on {hostname}"
             logger.error(err)
             return err
             
