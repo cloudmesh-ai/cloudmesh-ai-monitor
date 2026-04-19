@@ -3,13 +3,13 @@ Probing logic for cloudmesh-ai monitoring.
 """
 import subprocess
 import re
-import logging
 import socket
 from typing import Tuple, Optional, List, Dict, Any
 from rich.console import Console
+from cloudmesh.ai.common.logging import get_logger
 
 # Logging configuration
-logger = logging.getLogger("cloudmesh.ai.monitor.probe")
+logger = get_logger("cloudmesh.ai.monitor.probe")
 console = Console()
 
 class RemoteExecutor:

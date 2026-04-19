@@ -3,18 +3,25 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cloudmesh-ai-monitor"
+name = "cloudmesh-ai-observability"
 version = "0.1.0"
 description = "Observability extension for cloudmesh-ai services"
 dependencies = [
     "requests",
     "rich",
     "pyyaml",
+    "textual",
+    "fastapi",
+    "uvicorn",
     "cloudmesh-ai-common",
+    "cloudmesh-ai-cmc",
+    "pytest",
+    "pytest-asyncio"
 ]
 
-[project.scripts]
-cloudmesh-ai-monitor = "cloudmesh.ai.command.monitor:main"
-
 [project.entry-points."cloudmesh.ai.command"]
-monitor = "cloudmesh.ai.monitor.command.cli:entry_point"
+monitor = "command.monitor:register"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["command*"]
