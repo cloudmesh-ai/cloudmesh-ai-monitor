@@ -5,6 +5,7 @@
 # Variables
 PYTHON       := python
 PIP          := $(PYTHON) -m pip
+RUN_INTEGRATION := false
 PACKAGE_NAME := $(shell basename $(CURDIR))
 COMMAND_NAME := monitor
 TWINE        := $(PYTHON) -m twine
@@ -55,10 +56,18 @@ requirements:
 	pip-compile --output-file=requirements.txt pyproject.toml
 
 test:
-	pytest -v tests/
+	@if [ "$(RUN_INTEGRATION)" = "true" ]; then \
+		PYTHONPATH=src pytest -v tests/; \
+	else \
+		PYTHONPATH=src pytest -v tests/test_*.py; \
+	fi
 
 test-cov:
-	pytest --cov=cloudmesh.ai.monitor --cov-report=term-missing tests/
+	@if [ "$(RUN_INTEGRATION)" = "true" ]; then \
+		PYTHONPATH=src pytest --cov=cloudmesh.ai.monitor --cov-report=term-missing tests/; \
+	else \
+		PYTHONPATH=src pytest --cov=cloudmesh.ai.monitor --cov-report=term-missing tests/test_*.py; \
+	fi
 
 setup-test:
 	$(PIP) install pytest pytest-mock pytest-cov
