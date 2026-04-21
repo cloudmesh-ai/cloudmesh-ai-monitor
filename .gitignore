@@ -215,3 +215,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.release_state.json
+release_*.log
