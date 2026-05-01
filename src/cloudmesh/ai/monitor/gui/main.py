@@ -6,6 +6,9 @@ from contextlib import asynccontextmanager
 import uvicorn
 import os
 import asyncio
+import logging
+import sys
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from cloudmesh.ai.monitor.core import HostManager
@@ -14,7 +17,7 @@ from cloudmesh.ai.monitor.renderer import CellRenderer
 
 async def trigger_initial_probes():
     """Trigger an initial probe for all active hosts on startup."""
-    print("Triggering initial probes for all active hosts...")
+    log_to_ui("Triggering initial probes for all active hosts...")
     for label, info in hm.get_hosts_ordered():
         if info.get("active", True):
             # Reset timer immediately but keep last known values and success status
@@ -32,27 +35,46 @@ async def trigger_initial_probes():
             hostname = info.get("hostname")
             default_probe = "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits"
             probe_cmd = info.get("probe_cmd") or default_probe
-            print(f"[INFO] Starting initial probe | Host: {label} ({hostname}) | Cmd: {probe_cmd}")
+            log_to_ui(f"Starting initial probe | Host: {label} ({hostname}) | Cmd: {probe_cmd}")
             asyncio.create_task(run_probe_with_timeout(label, hostname, probe_cmd))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown."""
     await trigger_initial_probes()
-    print("Starting background scheduler loop...")
+    log_to_ui("Starting background scheduler loop...")
     scheduler_task = asyncio.create_task(scheduler_loop())
     yield
     scheduler_task.cancel()
     try:
         await scheduler_task
     except asyncio.CancelledError:
-        print("Background scheduler loop stopped.")
+        log_to_ui("Background scheduler loop stopped.")
 
 app = FastAPI(title="Cloudmesh AI Monitor API", lifespan=lifespan)
 hm = HostManager()
 executor = RemoteExecutor()
 in_flight_probes = set()
 next_probe_time = {} # Maps label -> datetime of next allowed probe
+
+# Log Buffer for UI
+log_buffer = deque(maxlen=100)
+
+def log_to_ui(message, level="INFO"):
+    """Helper to send messages to both the UI buffer and the system console."""
+    formatted = f"[{level}] {message}"
+    log_buffer.append(formatted)
+    print(formatted)
+
+class UILogHandler(logging.Handler):
+    def emit(self, record):
+        log_entry = self.format(record)
+        log_buffer.append(log_entry)
+
+# Setup logging to capture everything
+logging.basicConfig(level=logging.DEBUG)
+root_logger = logging.getLogger()
+root_logger.addHandler(UILogHandler())
 
 # Global mapping of internal probe function names to the actual functions
 PROBE_FUNCTIONS = {
@@ -85,6 +107,11 @@ class HostStatus(BaseModel):
     last_updated: Optional[str] = None
     is_probing: bool = False
     is_stale: bool = False
+
+@app.get("/api/plugin/monitor/logs")
+async def get_logs():
+    """Return the last 100 system logs."""
+    return list(log_buffer)
 
 @app.get("/api/hosts", response_model=List[HostStatus])
 async def get_hosts():
@@ -156,12 +183,12 @@ async def run_probe_with_timeout(label: str, hostname: str, probe_cmd: str, time
     try:
         await asyncio.wait_for(asyncio.to_thread(perform_probe, label, hostname, probe_cmd), timeout=timeout)
     except asyncio.TimeoutError:
-        print(f"[ERROR] Probe timed out after {timeout}s | Host: {label}")
+        log_to_ui(f"Probe timed out after {timeout}s | Host: {label}", "ERROR")
         # Ensure the host is removed from in-flight probes so it can be probed again
         in_flight_probes.discard(label)
         hm.update_metrics(label, "N/A", "N/A", "N/A", last_probe_success=False)
     except Exception as e:
-        print(f"[ERROR] Unexpected error during probe for {label}: {e}")
+        log_to_ui(f"Unexpected error during probe for {label}: {e}", "ERROR")
         in_flight_probes.discard(label)
 
 def perform_probe(label: str, hostname: str, probe_cmd: str):
@@ -209,7 +236,7 @@ def perform_probe(label: str, hostname: str, probe_cmd: str):
                 hm.update_metrics(label, "N/A", "N/A", "N/A", last_probe_success=False)
     finally:
         in_flight_probes.discard(label)
-        print(f"[INFO] Probe completed | Host: {label}")
+        log_to_ui(f"Probe completed | Host: {label}")
         # Once a probe is completed, the new probe start time is set to now + interval
         info = hm.get_host_info(label)
         if info:
@@ -229,7 +256,7 @@ async def probe_host(label: str, background_tasks: BackgroundTasks):
     default_probe = "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits"
     probe_cmd = info.get("probe_cmd") or default_probe
     
-    print(f"[INFO] Starting manual probe | Host: {label} ({hostname}) | Cmd: {probe_cmd}")
+    log_to_ui(f"Starting manual probe | Host: {label} ({hostname}) | Cmd: {probe_cmd}")
     in_flight_probes.add(label)
     background_tasks.add_task(run_probe_with_timeout, label, hostname, probe_cmd)
     return {"status": "probing"}
@@ -257,14 +284,14 @@ async def scheduler_loop():
                     default_probe = "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits"
                     probe_cmd = info.get("probe_cmd") or default_probe
                     
-                    print(f"[INFO] Starting scheduled probe | Host: {label} ({hostname}) | Cmd: {probe_cmd}")
+                    log_to_ui(f"Starting scheduled probe | Host: {label} ({hostname}) | Cmd: {probe_cmd}")
                     # Run probe in a separate thread to avoid blocking the loop
                     asyncio.create_task(run_probe_with_timeout(label, hostname, probe_cmd))
             
             # Sleep for a short period before checking again
             await asyncio.sleep(1)
         except Exception as e:
-            print(f"Scheduler error: {e}")
+            log_to_ui(f"Scheduler error: {e}", "ERROR")
             await asyncio.sleep(5)
 
 # Removed deprecated startup_event in favor of lifespan

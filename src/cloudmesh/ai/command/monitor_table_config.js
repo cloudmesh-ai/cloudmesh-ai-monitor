@@ -122,21 +122,19 @@ window.MonitorTableConfig = {
     },
 
     refreshHost: async function(label) {
-        console.log(`[Monitor] Refreshing host: ${label}`);
+        this.log(`Refreshing host: ${label}`);
         try {
             const res = await fetch(`/api/plugin/monitor/refresh_host?label=${encodeURIComponent(label)}`);
             const data = await res.json();
             if (data.success) {
-                console.log(`[Monitor] Refresh successful for ${label}: ${data.message}`);
+                this.log(`Refresh successful for ${label}: ${data.message}`);
                 // Trigger the panel to re-fetch data and update the table
                 window.dispatchEvent(new CustomEvent('monitor-interval-updated'));
             } else {
-                console.error(`[Monitor] Refresh failed for ${label}: ${data.error}`);
-                alert(`Refresh failed for ${label}: ${data.error}`);
+                this.log(`Refresh failed for ${label}: ${data.error}`, 'error');
             }
         } catch (e) {
-            console.error(`[Monitor] Network error refreshing host ${label}:`, e);
-            alert(`Network error while refreshing ${label}`);
+            this.log(`Network error refreshing host ${label}: ${e.message}`, 'error');
         }
     },
 
@@ -160,7 +158,7 @@ window.MonitorTableConfig = {
 
     toggleHostActive: async function(label, active) {
         const activeVal = active ? "true" : "false";
-        console.log(`[Monitor] Toggling host ${label} active status to ${activeVal}`);
+        this.log(`Toggling host ${label} active status to ${activeVal}`);
         try {
             const res = await fetch(`/api/plugin/monitor/update_host_active?label=${encodeURIComponent(label)}&active=${activeVal}`);
             if (!res.ok) {
@@ -168,48 +166,139 @@ window.MonitorTableConfig = {
             }
             const data = await res.json();
             if (!data.success) {
-                console.error(`[Monitor] Failed to toggle active status for ${label}:`, data);
-                alert(`Error: ${data.error || 'Unknown server error'}`);
+                this.log(`Failed to toggle active status for ${label}: ${data.error || 'Unknown server error'}`, 'error');
                 window.dispatchEvent(new CustomEvent('monitor-interval-updated'));
             }
         } catch (e) {
-            console.error(`[Monitor] Network error toggling active status for ${label}:`, e);
-            alert(`Network error while updating active status: ${e.message}`);
+            this.log(`Network error toggling active status for ${label}: ${e.message}`, 'error');
             window.dispatchEvent(new CustomEvent('monitor-interval-updated'));
         }
     },
 
     editHostsYaml: async function() {
-        console.log(`[Monitor] Requesting to edit hosts.yaml`);
+        this.log(`Requesting to edit hosts.yaml`);
         try {
             const res = await fetch(`/api/plugin/monitor/edit_hosts`);
             const data = await res.json();
             if (data.success) {
-                console.log(`[Monitor] hosts.yaml opened for editing: ${data.message}`);
+                this.log(`hosts.yaml opened for editing: ${data.message}`);
             } else {
-                console.error(`[Monitor] Failed to open hosts.yaml: ${data.error || 'Unknown error'}`);
-                alert(`Error: ${data.error || 'Could not open hosts.yaml'}`);
+                this.log(`Failed to open hosts.yaml: ${data.error || 'Unknown error'}`, 'error');
             }
         } catch (e) {
-            console.error(`[Monitor] Network error opening hosts.yaml:`, e);
-            alert(`Failed to connect to server: ${e.message}`);
+            this.log(`Network error opening hosts.yaml: ${e.message}`, 'error');
         }
     },
 
     openTerminal: async function(label) {
-        console.log(`[Monitor] Requesting terminal for: ${label}`);
+        this.log(`Requesting terminal for: ${label}`);
         try {
             const res = await fetch(`/api/plugin/monitor/open_terminal?label=${encodeURIComponent(label)}`);
             const data = await res.json();
             if (data.success) {
-                console.log(`[Monitor] Terminal opened successfully: ${data.message}`);
+                this.log(`Terminal opened successfully: ${data.message}`);
             } else {
-                console.error(`[Monitor] Failed to open terminal: ${data.error || 'Unknown error'}`);
-                alert(`Error: ${data.error || 'Could not open terminal'}`);
+                this.log(`Failed to open terminal: ${data.error || 'Unknown error'}`, 'error');
             }
         } catch (e) {
-            console.error(`[Monitor] Failed to request terminal for ${label}:`, e);
-            alert(`Failed to connect to server: ${e.message}`);
+            this.log(`Network error opening terminal for ${label}: ${e.message}`, 'error');
+        }
+    },
+
+    // Store original console methods to avoid infinite recursion during monkey-patching
+    _originalLog: console.log,
+    _originalError: console.error,
+
+    toggleErrorPanel: function() {
+        const panel = document.getElementById('monitor-error-panel');
+        const logs = document.getElementById('monitor-error-logs');
+        const icon = document.getElementById('monitor-error-toggle-icon');
+        
+        if (!panel || !logs || !icon) return;
+
+        const isMinimized = logs.classList.toggle('hidden');
+        
+        if (isMinimized) {
+            panel.className = 'h-auto overflow-hidden bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-mono text-xs p-2 border-t border-gray-200 dark:border-gray-700';
+            icon.className = 'fa-solid fa-chevron-down text-gray-400 dark:text-gray-500 transition-transform';
+        } else {
+            panel.className = 'h-40 overflow-y-auto bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-mono text-xs p-2 border-t border-gray-200 dark:border-gray-700';
+            icon.className = 'fa-solid fa-chevron-up text-gray-400 dark:text-gray-500 transition-transform';
+        }
+    },
+
+    log: function(message, level = 'info') {
+        const logsContainer = document.getElementById('monitor-error-logs');
+        
+        const timestamp = new Date().toLocaleTimeString();
+        const colorClass = level === 'error' ? 'text-red-500 dark:text-red-400' : 'text-gray-600 dark:text-gray-300';
+        const levelLabel = level === 'error' ? '[ERROR]' : '[INFO]';
+        
+        if (logsContainer) {
+            const logEntry = document.createElement('div');
+            logEntry.className = `mb-1 ${colorClass}`;
+            logEntry.innerHTML = `<span class="text-gray-400 mr-2">${timestamp}</span><span class="font-bold mr-2">${levelLabel}</span>${message}`;
+            logsContainer.appendChild(logEntry);
+            
+            // Keep only the last 100 messages
+            while (logsContainer.children.length > 100) {
+                logsContainer.removeChild(logsContainer.firstChild);
+            }
+            
+            const panel = document.getElementById('monitor-error-panel');
+            if (panel) panel.scrollTop = panel.scrollHeight;
+        }
+
+        if (level === 'error') {
+            this._originalError(`[Monitor] ${message}`);
+        } else {
+            this._originalLog(`[Monitor] ${message}`);
+        }
+    },
+
+    pollLogs: async function() {
+        try {
+            const res = await fetch('/api/plugin/monitor/logs');
+            if (!res.ok) return;
+            const logs = await res.json();
+            
+            if (!logs || logs.length === 0) return;
+
+            const panel = document.getElementById('monitor-error-panel');
+            if (!panel) return;
+
+            // If panel only has the header, just add all current logs
+            if (panel.children.length <= 1) {
+                logs.forEach(log => {
+                    const level = log.toLowerCase().includes('error') || log.toLowerCase().includes('fail') ? 'error' : 'info';
+                    this.log(log, level);
+                });
+                return;
+            }
+
+            // Get the text of the last log entry
+            const lastEl = panel.lastElementChild;
+            const lastLogContent = lastEl.lastChild ? lastEl.lastChild.textContent : "";
+
+            // Find the index of the last log content in the server logs
+            // We use a simple includes check because server logs might not have the exact same formatting as UI logs
+            const startIndex = logs.findIndex(log => log.includes(lastLogContent) && lastLogContent !== "");
+            
+            let newLogs = [];
+            if (startIndex === -1) {
+                // If we can't find the last log, it might be a server restart or buffer wrap.
+                // Append only the most recent logs to avoid duplicating the entire history.
+                newLogs = logs.slice(-10); 
+            } else {
+                newLogs = logs.slice(startIndex + 1);
+            }
+
+            newLogs.forEach(log => {
+                const level = log.toLowerCase().includes('error') || log.toLowerCase().includes('fail') ? 'error' : 'info';
+                this.log(log, level);
+            });
+        } catch (e) {
+            // Silently fail polling
         }
     },
 
@@ -222,8 +311,55 @@ window.MonitorTableConfig = {
             const container = document.querySelector(elementId);
             if (!container) throw new Error(`Element ${elementId} not found`);
             
-            container.innerHTML = ''; 
-            
+            // 1. Ensure the persistent layout exists
+            let mainWrapper = container.querySelector('.monitor-main-wrapper');
+            if (!mainWrapper) {
+                container.innerHTML = ''; 
+                mainWrapper = document.createElement('div');
+                mainWrapper.className = 'monitor-main-wrapper flex flex-col h-full w-full';
+                container.appendChild(mainWrapper);
+                
+                // Start polling only once
+                setInterval(() => this.pollLogs(), 2000);
+            }
+
+            // Ensure the Error Panel exists and has the toggle mechanism
+            let errorPanel = document.getElementById('monitor-error-panel');
+            if (!errorPanel) {
+                errorPanel = document.createElement('div');
+                errorPanel.id = 'monitor-error-panel';
+                errorPanel.className = 'h-40 overflow-y-auto bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-mono text-xs p-2 border-t border-gray-200 dark:border-gray-700';
+                mainWrapper.appendChild(errorPanel);
+            }
+
+            if (!document.getElementById('monitor-error-header')) {
+                // Clear existing content to rebuild with header/container structure
+                errorPanel.innerHTML = '';
+                
+                const header = document.createElement('div');
+                header.id = 'monitor-error-header';
+                header.className = 'flex items-center justify-between cursor-pointer mb-1 p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors';
+                header.onclick = () => this.toggleErrorPanel();
+                header.innerHTML = `
+                    <span class="text-gray-500 dark:text-gray-400 font-semibold uppercase text-[10px] tracking-wider">System logs</span>
+                    <i id="monitor-error-toggle-icon" class="fa-solid fa-chevron-up text-gray-400 dark:text-gray-500 transition-transform"></i>
+                `;
+                
+                const logsContainer = document.createElement('div');
+                logsContainer.id = 'monitor-error-logs';
+                
+                errorPanel.appendChild(header);
+                errorPanel.appendChild(logsContainer);
+            }
+
+            // 2. Update the Content Wrapper (Table + Filter)
+            let contentWrapper = mainWrapper.querySelector('.monitor-content-wrapper');
+            if (contentWrapper) {
+                contentWrapper.remove();
+            }
+            contentWrapper = document.createElement('div');
+            contentWrapper.className = 'monitor-content-wrapper flex-1 overflow-hidden flex flex-col';
+
             // Create Filter Bar
             const filterBar = document.createElement('div');
             filterBar.className = 'flex gap-4 p-3 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700';
@@ -253,8 +389,11 @@ window.MonitorTableConfig = {
             const tableEl = document.createElement('div');
             tableEl.className = 'flex-1 h-full';
             
-            container.appendChild(filterBar);
-            container.appendChild(tableEl);
+            contentWrapper.appendChild(filterBar);
+            contentWrapper.appendChild(tableEl);
+            
+            // Always insert contentWrapper at the top of mainWrapper
+            mainWrapper.prepend(contentWrapper);
             
             const table = new Tabulator(tableEl, {
                 data: data,
@@ -334,3 +473,31 @@ window.MonitorTableConfig = {
         }
     }
 };
+
+// Monkey-patch console.log and console.error to duplicate output to the Error Panel
+(function() {
+    const originalLog = window.MonitorTableConfig._originalLog;
+    const originalError = window.MonitorTableConfig._originalError;
+
+    console.log = function(...args) {
+        const message = args.map(arg => 
+            typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+        ).join(' ');
+        
+        if (window.MonitorTableConfig && window.MonitorTableConfig.log) {
+            window.MonitorTableConfig.log(message, 'info');
+        }
+        originalLog.apply(console, args);
+    };
+
+    console.error = function(...args) {
+        const message = args.map(arg => 
+            typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+        ).join(' ');
+        
+        if (window.MonitorTableConfig && window.MonitorTableConfig.log) {
+            window.MonitorTableConfig.log(message, 'error');
+        }
+        originalError.apply(console, args);
+    };
+})();
