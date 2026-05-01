@@ -106,6 +106,18 @@ class MonitorPlugin(PanelPlugin):
             return {"success": True, "label": label, "interval": interval}
         return {"success": False, "error": "Host not found"}
 
+    def update_host_active(self, label: str, active: int):
+        """Updates the active status of a host."""
+        try:
+            # Convert 1/0 to boolean
+            active_bool = bool(active)
+                
+            hm = HostManager()
+            hm.set_active(label, active_bool)
+            return {"success": True, "label": label, "active": active_bool}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def _clean_ssh_output(self, output: str) -> str:
         """Removes specific SSH post-quantum warnings from the output."""
         if not output:
@@ -146,12 +158,15 @@ class MonitorPlugin(PanelPlugin):
             print(f"[ERROR] Failed to fetch remote users for {hostname}: {e}")
         return "N/A"
 
-    def refresh_host(self, label: str):
-        """Triggers a manual probe for a specific host."""
+    def refresh_host(self, label: str, automatic: bool = False):
+        """Triggers a probe for a specific host. If automatic is True, respects the active status."""
         hm = HostManager()
         info = self._get_host_info(hm, label)
         if not info:
             return {"success": False, "error": "Host not found"}
+
+        if automatic and not info.get("active", True):
+            return {"success": True, "message": "Host is inactive, skipping automatic probe"}
 
         hostname = info.get("hostname")
         remote_users = self._get_remote_users(hostname)

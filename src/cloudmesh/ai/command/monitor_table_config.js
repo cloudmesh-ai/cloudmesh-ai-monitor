@@ -36,14 +36,20 @@ window.MonitorTableConfig = {
                 hozAlign: "center", 
                 headerSort: false,
                 formatter: function(cell) {
-                    const label = cell.getData().label;
+                    const data = cell.getData();
+                    const label = data.label;
+                    const active = data.active;
                     return `
-                        <div class="flex justify-center gap-2">
+                        <div class="flex justify-center items-center gap-2">
+                            <input type="checkbox" ${active ? 'checked' : ''} 
+                                   onchange="window.MonitorTableConfig.toggleHostActive('${label}', this.checked)" 
+                                   class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer" 
+                                   title="Active">
                             <button onclick="window.MonitorTableConfig.refreshHost('${label}')" class="p-1 hover:text-blue-500 transition-colors" title="Refresh">
-                                <i class="fa-solid fa-rotate"></i>
+                                 <i class="fa-solid fa-rotate"></i>
                             </button>
                             <button onclick="window.MonitorTableConfig.openTerminal('${label}')" class="p-1 hover:text-green-500 transition-colors" title="Terminal">
-                                <i class="fa-solid fa-terminal"></i>
+                                 <i class="fa-solid fa-terminal"></i>
                             </button>
                         </div>
                     `;
@@ -98,6 +104,62 @@ window.MonitorTableConfig = {
         }
     },
 
+    addHost: function() {
+        if (window.openAddHostModal) {
+            window.openAddHostModal();
+        } else {
+            console.error("[Monitor] openAddHostModal not found on window object");
+            alert("Add Host modal is not available.");
+        }
+    },
+
+    editHost: function(hostData) {
+        if (window.openEditHostModal) {
+            window.openEditHostModal(hostData);
+        } else {
+            console.error("[Monitor] openEditHostModal not found on window object");
+            alert("Edit Host modal is not available.");
+        }
+    },
+
+    toggleHostActive: async function(label, active) {
+        const activeVal = active ? "true" : "false";
+        console.log(`[Monitor] Toggling host ${label} active status to ${activeVal}`);
+        try {
+            const res = await fetch(`/api/plugin/monitor/update_host_active?label=${encodeURIComponent(label)}&active=${activeVal}`);
+            if (!res.ok) {
+                throw new Error(`Server responded with ${res.status}`);
+            }
+            const data = await res.json();
+            if (!data.success) {
+                console.error(`[Monitor] Failed to toggle active status for ${label}:`, data);
+                alert(`Error: ${data.error || 'Unknown server error'}`);
+                window.dispatchEvent(new CustomEvent('monitor-interval-updated'));
+            }
+        } catch (e) {
+            console.error(`[Monitor] Network error toggling active status for ${label}:`, e);
+            alert(`Network error while updating active status: ${e.message}`);
+            window.dispatchEvent(new CustomEvent('monitor-interval-updated'));
+        }
+    },
+
+    editHostsYaml: async function() {
+        console.log(`[Monitor] Requesting to edit hosts.yaml`);
+        try {
+            const res = await fetch(`/api/plugin/monitor/edit_hosts`);
+            const data = await res.json();
+            if (data.success) {
+                console.log(`[Monitor] hosts.yaml opened for editing: ${data.message}`);
+            } else {
+                console.error(`[Monitor] Failed to open hosts.yaml: ${data.error || 'Unknown error'}`);
+                alert(`Error: ${data.error || 'Could not open hosts.yaml'}`);
+            }
+        } catch (e) {
+            console.error(`[Monitor] Network error opening hosts.yaml:`, e);
+            alert(`Failed to connect to server: ${e.message}`);
+        }
+    },
+
     openTerminal: async function(label) {
         console.log(`[Monitor] Requesting terminal for: ${label}`);
         try {
@@ -141,6 +203,14 @@ window.MonitorTableConfig = {
                 <div class="flex items-center gap-2">
                     <span class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">Interval (s):</span>
                     <input type="number" id="monitor-interval" class="px-2 py-1 text-sm border rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white w-20" placeholder="10">
+                </div>
+                <div class="ml-auto flex items-center gap-2">
+                    <button onclick="window.MonitorTableConfig.addHost()" class="flex items-center gap-1 px-3 py-1 bg-primary text-white rounded text-xs font-bold hover:bg-blue-700 transition-colors">
+                        <i class="fa-solid fa-plus"></i> Add Host
+                    </button>
+                    <button onclick="window.MonitorTableConfig.editHostsYaml()" class="flex items-center gap-1 px-3 py-1 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded text-xs font-bold hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors">
+                        <i class="fa-solid fa-file-pen"></i> Edit hosts.yaml
+                    </button>
                 </div>
             `;
             
