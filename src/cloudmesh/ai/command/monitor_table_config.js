@@ -41,10 +41,11 @@ window.MonitorTableConfig = {
                     const active = data.active;
                     return `
                         <div class="flex justify-center items-center gap-2">
-                            <input type="checkbox" ${active ? 'checked' : ''} 
-                                   onchange="window.MonitorTableConfig.toggleHostActive('${label}', this.checked)" 
-                                   class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer" 
-                                   title="Active">
+                                <input type="checkbox" ${active ? 'checked' : ''} 
+                                        onclick="event.stopPropagation()"
+                                        onchange="window.MonitorTableConfig.toggleHostActive('${label}', this.checked)" 
+                                        class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer" 
+                                        title="Active">
                             <button onclick="window.MonitorTableConfig.refreshHost('${label}')" class="p-1 hover:text-blue-500 transition-colors" title="Refresh">
                                  <i class="fa-solid fa-rotate"></i>
                             </button>
