@@ -200,7 +200,6 @@ class MonitorPlugin(PanelPlugin):
             )
 
             # Support for Python functions defined in hosts.yaml
-            # 1. Check for fully qualified paths (e.g., cloudmesh.ai.common.monitor.probe.cm-dgx-smi)
             if "cloudmesh.ai" in probe_cmd:
                 try:
                     import importlib
@@ -210,16 +209,12 @@ class MonitorPlugin(PanelPlugin):
                     args = parts[1:]
 
                     module_path, func_name_raw = full_path.rsplit(".", 1)
-                    # Map hyphenated names to underscored function names (cm-dgx-smi -> cm_dgx_smi)
                     func_name = func_name_raw.replace("-", "_")
 
                     module = importlib.import_module(module_path)
                     probe_func = getattr(module, func_name)
 
-                    # The functions in probe.py expect (hostname, *args)
                     hostname = info.get("hostname")
-                    
-                    # Avoid passing the hostname twice if it's already the first argument in probe_cmd
                     actual_args = args
                     if args and args[0] == hostname:
                         actual_args = args[1:]
@@ -253,7 +248,7 @@ class MonitorPlugin(PanelPlugin):
                         "error": f"Dynamic Python probe failed: {str(e)}",
                     }
 
-            # 2. Check for explicit 'python:' prefix or registry lookup
+            # Registry lookup
             func_name = None
             if probe_cmd.startswith("python:"):
                 func_name = probe_cmd.replace("python:", "").strip()
@@ -298,7 +293,6 @@ class MonitorPlugin(PanelPlugin):
             # Fallback to SSH shell command execution
             hostname = info.get("hostname")
             try:
-                # Execute the probe command via SSH using a login shell to ensure PATH is loaded
                 full_cmd = f"ssh {hostname} \"bash -l -c '{probe_cmd}'\""
                 result = subprocess.run(
                     full_cmd, shell=True, capture_output=True, text=True, timeout=15
@@ -307,7 +301,6 @@ class MonitorPlugin(PanelPlugin):
                 if result.returncode != 0:
                     error_msg = self._clean_ssh_output(result.stderr or result.stdout)
                     
-                    # Specific SSH error detection
                     if "permission denied" in error_msg.lower() or "publickey" in error_msg.lower():
                         error_msg = "SSH Authentication failed. Please check your SSH keys."
                     elif "could not resolve hostname" in error_msg.lower() or "name or service not known" in error_msg.lower():
@@ -361,16 +354,18 @@ class MonitorPlugin(PanelPlugin):
                         "success": False,
                         "error": f"Unexpected probe output format: {output}",
                     }
-        except subprocess.TimeoutExpired:
-            hm.update_metrics(
-                label, "N/A", "N/A", "N/A", "N/A", "N/A", last_probe_success=False, who=remote_users
-            )
-            return {"success": False, "error": f"Probe timed out after 15 seconds for host {hostname}"}
+            except subprocess.TimeoutExpired:
+                hm.update_metrics(
+                    label, "N/A", "N/A", "N/A", "N/A", "N/A", last_probe_success=False, who=remote_users
+                )
+                return {"success": False, "error": f"Probe timed out after 15 seconds for host {hostname}"}
+            except Exception as e:
+                hm.update_metrics(
+                    label, "N/A", "N/A", "N/A", "N/A", "N/A", last_probe_success=False, who=remote_users
+                )
+                return {"success": False, "error": f"Unexpected probe execution error: {str(e)}"}
         except Exception as e:
-            hm.update_metrics(
-                label, "N/A", "N/A", "N/A", "N/A", "N/A", last_probe_success=False, who=remote_users
-            )
-            return {"success": False, "error": f"Unexpected probe execution error: {str(e)}"}
+            return {"success": False, "error": f"General refresh error: {str(e)}"}
         finally:
             with self._probing_lock:
                 self.PROBING_HOSTS.discard(label)
@@ -394,15 +389,7 @@ class MonitorPlugin(PanelPlugin):
         hostname = info.get("hostname")
         cmd = f"ssh {hostname}"
 
-        # Try iTerm2 first, then fall back to default Terminal
         try:
-            # Check if iTerm2 is installed
-            iterm_check = subprocess.run(
-                ["which", "iterm2"], capture_output=True
-            )  # This is a simplification
-            # Better way to check for iTerm2 is to try the osascript
-
-            # Try iTerm2
             iterm_script = f'tell application "iTerm" to create window with default profile, then tell current session of current window to write text "{cmd}"'
             subprocess.run(["osascript", "-e", iterm_script], check=True)
             subprocess.run(
@@ -411,7 +398,6 @@ class MonitorPlugin(PanelPlugin):
             return {"success": True, "message": f"iTerm2 opened for {hostname}"}
         except Exception:
             try:
-                # Fallback to default Terminal
                 script = f'tell application "Terminal" to do script "{cmd}"\ntell application "Terminal" to activate'
                 subprocess.run(["osascript", "-e", script], check=True)
                 return {"success": True, "message": f"Terminal opened for {hostname}"}
