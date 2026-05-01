@@ -102,9 +102,15 @@ class MonitorPlugin(PanelPlugin):
 
     def update_host_interval(self, label: str, interval: int):
         """Updates the refresh interval for a specific host."""
-        hm = HostManager.get_instance()
-        info = self._get_host_info(hm, label)
-        if info:
+        try:
+            hm = HostManager.get_instance()
+            info = self._get_host_info(hm, label)
+            if not info:
+                return {"success": False, "error": f"Host '{label}' not found in configuration"}
+            
+            if not isinstance(interval, int) or interval <= 0:
+                return {"success": False, "error": f"Invalid interval '{interval}'. Must be a positive integer."}
+
             hm.add_host(
                 label,
                 info.get("hostname"),
@@ -113,7 +119,8 @@ class MonitorPlugin(PanelPlugin):
                 info.get("probe_cmd"),
             )
             return {"success": True, "label": label, "interval": interval}
-        return {"success": False, "error": "Host not found"}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to update interval for {label}: {str(e)}"}
 
     def update_host_active(self, label: str, active: int):
         """Updates the active status of a host."""
@@ -122,10 +129,13 @@ class MonitorPlugin(PanelPlugin):
             active_bool = bool(active)
                 
             hm = HostManager.get_instance()
+            if label not in hm.hosts_data:
+                return {"success": False, "error": f"Host '{label}' not found in configuration"}
+                
             hm.set_active(label, active_bool)
             return {"success": True, "label": label, "active": active_bool}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": f"Failed to update active status for {label}: {str(e)}"}
 
     def _clean_ssh_output(self, output: str) -> str:
         """Removes specific SSH post-quantum warnings from the output."""
@@ -293,18 +303,23 @@ class MonitorPlugin(PanelPlugin):
                 result = subprocess.run(
                     full_cmd, shell=True, capture_output=True, text=True, timeout=15
                 )
-
+                
                 if result.returncode != 0:
                     error_msg = self._clean_ssh_output(result.stderr or result.stdout)
-                    if "not found" in error_msg.lower():
+                    
+                    # Specific SSH error detection
+                    if "permission denied" in error_msg.lower() or "publickey" in error_msg.lower():
+                        error_msg = "SSH Authentication failed. Please check your SSH keys."
+                    elif "could not resolve hostname" in error_msg.lower() or "name or service not known" in error_msg.lower():
+                        error_msg = f"Could not resolve hostname: {hostname}"
+                    elif "not found" in error_msg.lower():
                         import re
-
                         match = re.search(
                             r"([a-zA-Z0-9\-_/.]+): command not found", error_msg
                         )
                         cmd_name = match.group(1) if match else "the probe tool"
                         error_msg = f"Command '{cmd_name}' not found on remote host. Please ensure it is installed or use an absolute path in the probe configuration."
-
+                
                     hm.update_metrics(
                         label, "N/A", "N/A", "N/A", "N/A", "N/A", last_probe_success=False, who=remote_users
                     )
@@ -346,12 +361,16 @@ class MonitorPlugin(PanelPlugin):
                         "success": False,
                         "error": f"Unexpected probe output format: {output}",
                     }
-
-            except Exception as e:
-                hm.update_metrics(
-                    label, "N/A", "N/A", "N/A", "N/A", "N/A", last_probe_success=False, who=remote_users
-                )
-                return {"success": False, "error": f"Probe execution failed: {str(e)}"}
+        except subprocess.TimeoutExpired:
+            hm.update_metrics(
+                label, "N/A", "N/A", "N/A", "N/A", "N/A", last_probe_success=False, who=remote_users
+            )
+            return {"success": False, "error": f"Probe timed out after 15 seconds for host {hostname}"}
+        except Exception as e:
+            hm.update_metrics(
+                label, "N/A", "N/A", "N/A", "N/A", "N/A", last_probe_success=False, who=remote_users
+            )
+            return {"success": False, "error": f"Unexpected probe execution error: {str(e)}"}
         finally:
             with self._probing_lock:
                 self.PROBING_HOSTS.discard(label)

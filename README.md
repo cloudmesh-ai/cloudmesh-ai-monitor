@@ -6,6 +6,7 @@ Observability extension for cloudmesh-ai services.
 Deep integration with Prometheus, Grafana, and remote system monitoring to provide real-time health and performance data for AI infrastructure (DGX nodes, GPU exporters).
 
 ## Features
+- **AI Panel (Web UI)**: A modern web-based dashboard for real-time fleet monitoring, integrated into the cloudmesh-ai panel.
 - **Real-time TUI Dashboard**: A professional Textual-based terminal interface for fleet-wide monitoring.
 - **LLM Health & Performance Diagnostics**: Specialized tools to verify LLM connectivity and measure inference performance (TTFT, TPS).
 - **Disk Health Monitoring**: Remote disk health checks using `smartctl` to detect drive failures and wear levels across the fleet.
@@ -20,19 +21,41 @@ Deep integration with Prometheus, Grafana, and remote system monitoring to provi
 ## Configuration
 
 ### Host Configuration
-Create a configuration file at `~/.config/cloudmesh/ai/hosts.yaml`:
+Create a configuration file at `~/.config/cloudmesh/ai/hosts.yaml`. You can define the order of hosts and specify custom probe commands for different hardware types:
+
 ```yaml
 cloudmesh:
   ai:
+    host_order:
+      - dgx-station
+      - local-mac
+      - spark
+      - desktop
     hosts:
-      dgx-01:
+      dgx-station:
         label: "DGX-Primary"
-        gpu: "nvidia"
-        cpu: "intel"
-      dgx-02:
-        label: "DGX-Secondary"
-        gpu: "nvidia"
-        cpu: "intel"
+        hostname: dgx-01
+        active: true
+        probe_cmd: cloudmesh.ai.monitor.probe.cm-dgx-smi dgx-01 0,1,2,4
+        refresh_interval: 10
+      local-mac:
+        label: "Local-Mac"
+        hostname: localhost
+        active: true
+        probe_cmd: cloudmesh.ai.monitor.probe.cm-mac-smi
+        refresh_interval: 10
+      spark:
+        label: "Spark-Cluster"
+        hostname: spark-01
+        active: false
+        probe_cmd: cloudmesh.ai.monitor.probe.cm-spark-smi spark-01
+        refresh_interval: 10
+      desktop:
+        label: "GPU-Node-02"
+        hostname: gpu-02
+        active: false
+        probe_cmd: cloudmesh.ai.monitor.probe.cm-dgx-smi gpu-02 0
+        refresh_interval: 10
 ```
 
 ### GUI Framework Selection
@@ -70,12 +93,13 @@ This command performs:
 - **Diagnostics**: Fetches KV cache usage and request queue depth from `/metrics`.
 
 ### Host Setup
-Manage your monitoring fleet via CLI:
+Manage your monitoring fleet via CLI or the AI Panel:
 ```bash
 # Add a new host
 cloudmesh-ai-monitor setup add dgx-03 --label "DGX-New"
 
 # Activate/Deactivate a host
+# Active hosts are probed automatically; inactive hosts are skipped to save resources.
 cloudmesh-ai-monitor setup activate dgx-01
 cloudmesh-ai-monitor setup deactivate dgx-02
 
@@ -172,10 +196,22 @@ your_username ALL=(ALL) NOPASSWD: /usr/sbin/smartctl
 #### Custom Probes
 You can use any command that returns hardware metrics. If you use a custom command, ensure it returns data in a format the monitor can parse, or use the **Probe** button in the TUI to verify the raw output.
 
+**Advanced: Python Probes**
+For complex monitoring, you can use Python functions. In your configuration, set the `probe_cmd` to the fully qualified path of a Python function:
+`probe_cmd: "cloudmesh.ai.monitor.probe.my_custom_probe"`
+
+The function should accept `(hostname, *args)` and return a dictionary containing `gpu_usage`, `gpu_temp`, and `mem_usage`.
+
 ### TUI Shortcuts
 - `p`: Manually trigger a probe for the selected host.
 - `u`: Update host configuration (Label, Probe Command, Refresh Interval).
 - `Enter`: Open host details/settings.
+
+## AI Panel (Web UI)
+The monitor is integrated into the cloudmesh-ai panel, providing:
+- **Interactive Table**: Real-time updates of GPU/CPU metrics with color-coded thresholds.
+- **Host Controls**: Quick toggles for host activity, manual refresh, and one-click terminal access.
+- **System Logs**: A collapsible log panel at the bottom of the view that streams backend events and probe errors in real-time.
 
 ## Key Achievements
 
