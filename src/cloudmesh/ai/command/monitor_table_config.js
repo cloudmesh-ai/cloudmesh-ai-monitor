@@ -155,6 +155,12 @@ window.MonitorTableConfig = {
                 layout: "fitDataFill",
                 height: "100%",
                 columns: this.getColumns(),
+                rowClick: function(e, row) {
+                    const label = row.getData().label;
+                    if (window.showHostDetail) {
+                        window.showHostDetail(label);
+                    }
+                },
                 cellEdited: async (cell) => {
                     const field = cell.getField();
                     if (field === 'refresh_interval') {
