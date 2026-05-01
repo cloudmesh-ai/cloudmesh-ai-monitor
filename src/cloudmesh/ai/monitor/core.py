@@ -40,13 +40,32 @@ logger = logging.getLogger("cloudmesh.ai.monitor")
 console = Console()
 
 class HostManager:
-    """Manages remote AI hosts via YAML configuration files."""
+    """Manages remote AI hosts via YAML configuration files. Implemented as a Singleton."""
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls, *args, **kwargs):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(HostManager, cls).__new__(cls)
+                cls._instance._initialized = False
+            return cls._instance
+
     def __init__(self, config_path: str = "~/.config/cloudmesh/ai/hosts.yaml", status_path: str = "~/.config/cloudmesh/ai/hosts-status.yaml"):
+        if self._initialized:
+            return
+        
         self.config_path = Path(config_path).expanduser()
         self.status_path = Path(status_path).expanduser()
         self.full_cfg = self._load_full_config()
         self.hosts_data = self.full_cfg.get("cloudmesh", {}).get("ai", {}).get("hosts", {})
         self._lock = threading.Lock()
+        self._initialized = True
+
+    @classmethod
+    def get_instance(cls):
+        """Returns the singleton instance of HostManager."""
+        return cls()
 
     def _load_full_config(self) -> Dict[str, Any]:
         if not self.config_path.exists():

@@ -28,5 +28,35 @@
 
 /* Status Indicators */
 .status-circle { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--tabulator-border); }
-.status-downloaded { background-color: #2da44e; border-color: #2da44e; }
-.status-not-downloaded { background-color: var(--tabulator-bg); border-color: var(--tabulator-border); }
+.status-probing { background-color: #add8e6; border-color: #add8e6; }
+.status-fresh { background-color: #2da44e; border-color: #2da44e; }
+.status-stale { background-color: #cf222e; border-color: #cf222e; }
+
+/* Pulsing indicator for live probing */
+.probe-pulse {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    background-color: #3b82f6;
+    border-radius: 50%;
+    margin-right: 6px;
+    animation: pulse-animation 1.5s infinite ease-in-out;
+}
+
+@keyframes pulse-animation {
+    0% {
+        transform: scale(0.8);
+        opacity: 0.5;
+        box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
+    }
+    70% {
+        transform: scale(1);
+        opacity: 1;
+        box-shadow: 0 0 0 6px rgba(59, 130, 246, 0);
+    }
+    100% {
+        transform: scale(0.8);
+        opacity: 0.5;
+        box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+    }
+}

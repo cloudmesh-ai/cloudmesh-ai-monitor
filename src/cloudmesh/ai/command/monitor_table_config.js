@@ -32,7 +32,7 @@ window.MonitorTableConfig = {
         return [
             { 
                 title: "Actions", 
-                width: 100, 
+                width: 140, 
                 hozAlign: "center", 
                 headerSort: false,
                 formatter: function(cell) {
@@ -46,9 +46,11 @@ window.MonitorTableConfig = {
                                         onchange="window.MonitorTableConfig.toggleHostActive('${label}', this.checked)" 
                                         class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer" 
                                         title="Active">
-                            <button onclick="window.MonitorTableConfig.refreshHost('${label}')" class="p-1 hover:text-blue-500 transition-colors" title="Refresh">
-                                 <i class="fa-solid fa-rotate"></i>
-                            </button>
+                            <div class="flex items-center">
+                                <button onclick="window.MonitorTableConfig.refreshHost('${label}')" class="p-1 hover:text-blue-500 transition-colors" title="Refresh">
+                                     <i class="fa-solid fa-rotate"></i>
+                                </button>
+                            </div>
                             <button onclick="window.MonitorTableConfig.openTerminal('${label}')" class="p-1 hover:text-green-500 transition-colors" title="Terminal">
                                  <i class="fa-solid fa-terminal"></i>
                             </button>
@@ -62,8 +64,28 @@ window.MonitorTableConfig = {
                 width: 80, 
                 hozAlign: "center", 
                 formatter: function(cell) {
-                    const val = cell.getValue();
-                    return `<span class="status-circle ${val ? 'status-downloaded' : 'status-not-downloaded'}"></span>`;
+                    const data = cell.getData();
+                    if (data.probing) {
+                        return `
+                            <div class="flex justify-center items-center">
+                                <span class="probe-pulse" title="Probing now..."></span>
+                            </div>`;
+                    }
+                    
+                    const lastUpdated = data.last_updated;
+                    if (!lastUpdated || lastUpdated === "N/A") {
+                        return `<span class="status-circle status-stale"></span>`;
+                    }
+
+                    try {
+                        const lastDate = new Date(lastUpdated);
+                        const now = new Date();
+                        const diffSeconds = (now - lastDate) / 1000;
+                        const statusClass = diffSeconds <= 10 ? 'status-fresh' : 'status-stale';
+                        return `<span class="status-circle ${statusClass}"></span>`;
+                    } catch (e) {
+                        return `<span class="status-circle status-stale"></span>`;
+                    }
                 }
             },
             { title: "Label", field: "label", width: 180, formatter: (cell) => `<b>${cell.getValue()}</b>` },
@@ -82,7 +104,20 @@ window.MonitorTableConfig = {
             { title: "Mem Usage (%)", field: "mem_usage", width: 200, hozAlign: "right", formatter: this.metricFormatter },
             { title: "CPU Usage (%)", field: "cpu_usage", width: 150, hozAlign: "right", formatter: this.metricFormatter },
             { title: "CPU Temp", field: "cpu_temp", width: 150, hozAlign: "right", formatter: this.metricFormatter },
-            { title: "Last Updated", field: "last_updated", width: 220, hozAlign: "right" },
+            { 
+                title: "Last Updated", 
+                field: "last_updated", 
+                width: 220, 
+                hozAlign: "right",
+                formatter: function(cell) {
+                    const val = cell.getValue();
+                    return `
+                        <div class="flex justify-end items-center gap-1">
+                            <span>${val}</span>
+                        </div>
+                    `;
+                }
+            },
         ];
     },
 

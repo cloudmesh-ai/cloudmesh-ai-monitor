@@ -9,9 +9,8 @@ from rich.table import Table
 from rich.panel import Panel
 from cloudmesh.ai.common.logging import get_logger
 
-from cloudmesh.ai.monitor.terminalgui.core import HostManager
+from cloudmesh.ai.monitor.core import HostManager
 from cloudmesh.ai.monitor.probe import RemoteExecutor
-from cloudmesh.ai.monitor.terminalgui.app import CloudmeshAIMonitorApp
 from cloudmesh.ai.monitor.gui.main import start_gui
 from cloudmesh.ai.monitor.llm_checker import LLMChecker
 
@@ -153,13 +152,12 @@ def dashboard_cmd(gui, terminal, port):
     if gui:
         console.print(f"[blue]Launching Web GUI on http://localhost:{port}...[/blue]")
         start_gui(port=port)
-    elif terminal or not (gui or terminal):
-        # Default to TUI if -t is passed or no flag is provided
-        app = CloudmeshAIMonitorApp()
-        app.run()
+    elif terminal:
+        console.print("[yellow]Terminal UI is deprecated and no longer available. Use -g for Web GUI.[/yellow]")
     else:
-        app = CloudmeshAIMonitorApp()
-        app.run()
+        # Default to Web GUI if no flag is provided
+        console.print(f"[blue]Launching Web GUI on http://localhost:{port}...[/blue]")
+        start_gui(port=port)
 
 @monitor_group.command(name="check-exporter")
 @click.option("--url", default="http://localhost:9100/metrics", help="URL of the GPU exporter metrics endpoint.")

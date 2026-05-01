@@ -8,7 +8,7 @@ import os
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-from cloudmesh.ai.monitor.terminalgui.core import HostManager
+from cloudmesh.ai.monitor.core import HostManager
 from cloudmesh.ai.monitor.probe import RemoteExecutor, cm_dgx_smi, cm_spark_smi, cm_mac_smi
 from cloudmesh.ai.monitor.renderer import CellRenderer
 
