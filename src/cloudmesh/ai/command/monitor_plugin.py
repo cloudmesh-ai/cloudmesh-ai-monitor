@@ -2,7 +2,7 @@ import subprocess
 import os
 import getpass
 from cloudmesh.ai.command.plugin import PanelPlugin
-from cloudmesh.ai.monitor.terminalgui.core import HostManager
+from cloudmesh.ai.monitor.core import HostManager
 from typing import Any
 
 
