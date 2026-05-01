@@ -125,7 +125,7 @@ class HostManager:
             logger.info(f"Added new host: {label} ({hostname})")
         self.save()
 
-    def update_metrics(self, label: str, gpu_usage: Any, gpu_temp: Any, mem_usage: Any, cpu_usage: Any = "N/A", cpu_temp: Any = "N/A", last_probe_success=None, last_probe_time: Any = "N/A"):
+    def update_metrics(self, label: str, gpu_usage: Any, gpu_temp: Any, mem_usage: Any, cpu_usage: Any = "N/A", cpu_temp: Any = "N/A", last_probe_success=None, last_probe_time: Any = "N/A", who: Optional[str] = None):
         """Updates the metrics for a host in the status file."""
         # We use the status file for metrics to avoid frequent writes to the main config
         hosts_status = self._load_status()
@@ -136,6 +136,8 @@ class HostManager:
         host_status["mem_usage"] = mem_usage
         host_status["cpu_usage"] = cpu_usage
         host_status["cpu_temp"] = cpu_temp
+        if who:
+            host_status["who"] = who
         
         # Group probe results into the 'probe' dictionary
         probe_info = host_status.setdefault("probe", {})

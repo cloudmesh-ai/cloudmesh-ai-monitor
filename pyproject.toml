@@ -22,6 +22,9 @@ dependencies = [
 [project.entry-points."cloudmesh.ai.command"]
 monitor = "command.monitor:register"
 
+[project.entry-points."cloudmesh.ai.plugin"]
+monitor = "cloudmesh.ai.command.monitor_plugin:MonitorPlugin"
+
 [tool.setuptools.dynamic]
 version = {file = "VERSION"}
 

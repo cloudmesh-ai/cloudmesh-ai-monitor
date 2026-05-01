@@ -1,0 +1,6 @@
+cloudmesh:
+  ai:
+    app:
+      - name: "AI Host Monitor"
+        image: "fa-solid fa-desktop"
+        description: "Real-time monitoring of GPU, CPU, and Memory usage across AI compute hosts."
