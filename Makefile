@@ -13,16 +13,14 @@ VERSION_FILE := VERSION
 GIT          := git
 PYENVVERSION := $(shell pyenv version-name)
 
-.PHONY: help install clean build upload test-upload test-install reinstall \
-        check version patch tag release test test-cov setup-test uninstall-all \
+.PHONY: help install clean build test reinstall \
+        check tag release test test-cov setup-test uninstall-all \
         tmp-setup
 
 help:
 	@echo
 	@echo "Makefile for the Monitor Cloudmesh extension:"
 	@echo
-	@echo "  version       - Display current version from $(VERSION_FILE)"
-	@echo "  patch V=x.y.z - Update version in $(VERSION_FILE) (e.g., V=4.0.1.dev1)"
 	@echo "  install       - Install in editable mode for local development"
 	@echo "  reinstall     - Clean and reinstall locally"
 	@echo "  clean         - Remove build artifacts, cache, and test debris"
@@ -31,21 +29,9 @@ help:
 	@echo "  test          - Run pytest suite"
 	@echo "  test-cov      - Run pytest with coverage report"
 	@echo "  setup-test    - Install test deps"
-	@echo "  test-upload   - Build, check, and upload to TestPyPI"
-	@echo "  test-install  - Uninstall local and install from TestPyPI"
-	@echo "  upload        - Build, check, and upload to Production PyPI"
 	@echo "  tag           - Create a git tag based on current version and push"
 	@echo "  release       - Full Production Cycle: upload + tag"
 	@echo
-
-# --- VERSION MANAGEMENT ---
-
-version:
-	$(PYTHON) bin/version_mgmt.py version
-
-patch:
-	@if [ -z "$(V)" ]; then echo "Usage: make patch V=4.0.1.dev1"; exit 1; fi
-	$(PYTHON) bin/version_mgmt.py patch $(V)
 
 # --- DEVELOPMENT & TESTING ---
 
@@ -82,31 +68,8 @@ check: build
 	@echo "Validating distribution metadata..."
 	$(TWINE) check dist/*
 
-# --- TEST PYPI (SANDBOX) ---
-
-test-upload: check
-	@echo "Uploading to TestPyPI..."
-	$(TWINE) upload --repository testpypi dist/*
-
 tmp-setup:
 	cd /tmp && pyenv local $$(pyenv global)
-
-test-install: tmp-setup
-	@echo "Removing local version to ensure fresh test..."
-	-$(PIP) uninstall -y $(PACKAGE_NAME)
-	@echo "Installing latest version from TestPyPI..."
-	cd /tmp && pyenv exec $(PYTHON) -m pip install --no-cache-dir --upgrade --force-reinstall --ignore-installed \
-				  --index-url https://test.pypi.org/simple/ \
-				  --extra-index-url https://pypi.org/simple/ \
-				  --pre $(PACKAGE_NAME)
-	@echo "\nVerification: Running '$(COMMAND_NAME) version'..."
-	$(COMMAND_NAME) version
-
-# --- PRODUCTION AND TAGGING ---
-
-upload: check
-	@echo "Uploading to Production PyPI..."
-	$(TWINE) upload dist/*
 
 tag:
 	@VERSION=$$(cat $(VERSION_FILE)); \
