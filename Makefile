@@ -14,7 +14,7 @@ GIT          := git
 PYENVVERSION := $(shell pyenv version-name)
 
 .PHONY: help install clean build test reinstall \
-        check tag release test test-cov setup-test uninstall-all \
+        check tag release test-html test-cov setup-test uninstall-all \
         tmp-setup
 
 help:
@@ -43,10 +43,18 @@ requirements:
 
 test:
 	@if [ "$(RUN_INTEGRATION)" = "true" ]; then \
-		PYTHONPATH=src pytest -v tests/; \
+		PYTHONPATH=src $(PYTHON) -m pytest -v tests/; \
 	else \
-		PYTHONPATH=src pytest -v tests/test_*.py; \
+		PYTHONPATH=src $(PYTHON) -m pytest -v tests/test_*.py; \
 	fi
+
+test-html:
+	@if [ "$(RUN_INTEGRATION)" = "true" ]; then \
+		PYTHONPATH=src $(PYTHON) -m pytest -v --html=.report.html tests/; \
+	else \
+		PYTHONPATH=src $(PYTHON) -m pytest -v --html=.report.html tests/test_*.py; \
+	fi
+	open .report.html
 
 test-cov:
 	@if [ "$(RUN_INTEGRATION)" = "true" ]; then \
@@ -56,7 +64,7 @@ test-cov:
 	fi
 
 setup-test:
-	$(PIP) install pytest pytest-mock pytest-cov
+	$(PIP) install pytest pytest-mock pytest-cov pytest-html
 
 # --- BUILD AND VALIDATE ---
 
