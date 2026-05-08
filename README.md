@@ -7,7 +7,7 @@ Deep integration with Prometheus, Grafana, and remote system monitoring to provi
 
 ## Features
 - **AI Panel (Web UI)**: A modern web-based dashboard for real-time fleet monitoring, integrated into the cloudmesh-ai panel.
-- **Real-time TUI Dashboard**: A professional Textual-based terminal interface for fleet-wide monitoring.
+- **Real-time TUI Dashboard**: A Textual-based terminal interface for fleet-wide monitoring.
 - **LLM Health & Performance Diagnostics**: Specialized tools to verify LLM connectivity and measure inference performance (TTFT, TPS).
 - **Disk Health Monitoring**: Remote disk health checks using `smartctl` to detect drive failures and wear levels across the fleet.
 - **Remote Host Management**: Manage a fleet of AI nodes via a YAML configuration file or interactive TUI setup.
@@ -215,7 +215,7 @@ The monitor is integrated into the cloudmesh-ai panel, providing:
 
 ## Key Achievements
 
-- **Textual TUI**: Implemented a professional Terminal User Interface using the `textual` framework, providing a real-time fleet dashboard and an interactive host management setup screen.
+- **Textual TUI**: Implemented a Terminal User Interface using the `textual` framework, providing a real-time fleet dashboard and an interactive host management setup screen.
 - **LLM Performance Observability**: Developed a streaming-based diagnostic tool to measure critical LLM metrics including **TTFT** and **TPS**, enabling precise performance benchmarking.
 - **Hardware Health Diagnostics**: Implemented remote disk health monitoring using `smartctl` to proactively identify failing drives across the AI infrastructure.
 - **Modular Architecture**: Organized the code into `terminalgui` (for TUI), `command` (for CLI), and `grafana` (for future web-based monitoring) frameworks.
