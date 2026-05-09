@@ -231,3 +231,7 @@ The monitor is integrated into the cloudmesh-ai panel, providing:
   - `cmc monitor check-exporter`: Verify Prometheus GPU exporter health.
 - **Dynamic GUI Selection**: The system now respects the `CMC_GUI` environment variable to switch between monitoring interfaces, defaulting to `terminalgui`.
 - **Core Logic**: Centralized host management and remote execution logic to ensure consistency across different interfaces.
+## Core Dependencies
+This project depends on the following core components of the Cloudmesh AI ecosystem:
+- [cloudmesh-ai-common](https://github.com/cloudmesh-ai/cloudmesh-ai-common)
+- [cloudmesh-ai-cmc](https://github.com/cloudmesh-ai/cloudmesh-ai-cmc)

@@ -47,6 +47,7 @@ test:
 	else \
 		PYTHONPATH=src $(PYTHON) -m pytest -v tests/test_*.py; \
 	fi
+	for d in ../cloudmesh-ai-*; do echo "--- \$$d ---"; git -C \$$d status -s; done
 
 test-html:
 	@if [ "$(RUN_INTEGRATION)" = "true" ]; then \
