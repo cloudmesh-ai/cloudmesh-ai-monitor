@@ -43,25 +43,25 @@ requirements:
 
 test:
 	@if [ "$(RUN_INTEGRATION)" = "true" ]; then \
-		PYTHONPATH=src $(PYTHON) -m pytest -v tests/; \
+	PYTHONPATH=src $(PYTHON) -m pytest -v tests/; \
 	else \
-		PYTHONPATH=src $(PYTHON) -m pytest -v tests/test_*.py; \
+	PYTHONPATH=src $(PYTHON) -m pytest -v tests/test_*.py; \
 	fi
 	for d in ../cloudmesh-ai-*; do echo "--- \$$d ---"; git -C \$$d status -s; done
 
 test-html:
 	@if [ "$(RUN_INTEGRATION)" = "true" ]; then \
-		PYTHONPATH=src $(PYTHON) -m pytest -v --html=.report.html tests/; \
+	PYTHONPATH=src $(PYTHON) -m pytest -v --html=.report.html tests/; \
 	else \
-		PYTHONPATH=src $(PYTHON) -m pytest -v --html=.report.html tests/test_*.py; \
+	PYTHONPATH=src $(PYTHON) -m pytest -v --html=.report.html tests/test_*.py; \
 	fi
 	open .report.html
 
 test-cov:
 	@if [ "$(RUN_INTEGRATION)" = "true" ]; then \
-		PYTHONPATH=src pytest --cov=cloudmesh.ai.monitor --cov-report=term-missing tests/; \
+	PYTHONPATH=src pytest --cov=cloudmesh.ai.monitor --cov-report=term-missing tests/; \
 	else \
-		PYTHONPATH=src pytest --cov=cloudmesh.ai.monitor --cov-report=term-missing tests/test_*.py; \
+	PYTHONPATH=src pytest --cov=cloudmesh.ai.monitor --cov-report=term-missing tests/test_*.py; \
 	fi
 
 setup-test:
