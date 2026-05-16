@@ -27,7 +27,8 @@ dependencies = [
     "cloudmesh-ai-common",
     "cloudmesh-ai-cmc",
     "pytest",
-    "pytest-asyncio"
+    "pytest-asyncio",
+    "cloudmesh-ai-theme",
 ]
 
 [project.entry-points."cloudmesh.ai.command"]
